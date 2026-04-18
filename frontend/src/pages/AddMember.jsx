@@ -30,7 +30,13 @@ const AddMember = () => {
     }
     setSubmitting(true);
     try {
-      await usersAPI.create({ name: form.name, phone: form.phone, email: form.email || undefined, password: form.password, role: form.role });
+      await usersAPI.create({
+        name: form.name,
+        phone: form.phone,
+        email: form.email || undefined,
+        role: form.role,
+        password: form.password,
+      });
       toast.success(`Anggota "${form.name}" berhasil ditambahkan!`);
       setForm({ name: '', phone: '', email: '', role: '', password: '' });
     } catch (err) {

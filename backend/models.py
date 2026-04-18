@@ -95,7 +95,7 @@ class ProjectInDB(BaseModel):
     startDate: str
     endDate: str
     status: str = "Aktif"
-    teamMembers: List[str] = []
+    teamMembers: List[str] = Field(default_factory=list)
     createdBy: str
     progress: int = 0
     deletedAt: Optional[str] = None
@@ -171,6 +171,7 @@ class NotificationInDB(BaseModel):
     type: str
     taskId: Optional[str] = None
     message: str
-    targetEmail: str
+    targetUserId: str
+    targetEmail: Optional[str] = None
     isRead: bool = False
     timestamp: str = Field(default_factory=lambda: datetime.utcnow().isoformat() + "Z")

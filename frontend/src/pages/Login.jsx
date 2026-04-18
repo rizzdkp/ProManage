@@ -12,9 +12,10 @@ import { toast } from 'sonner';
 const Login = () => {
   const { login, loading } = useAuth();
   const navigate = useNavigate();
-  const [showPassword, setShowPassword] = useState(false);
+  const [showEmailPassword, setShowEmailPassword] = useState(false);
+  const [showWaPassword, setShowWaPassword] = useState(false);
   const [emailForm, setEmailForm] = useState({ email: '', password: '' });
-  const [waPhone, setWaPhone] = useState('');
+  const [waForm, setWaForm] = useState({ phone: '', password: '' });
 
   const handleEmailLogin = async (e) => {
     e.preventDefault();
@@ -33,11 +34,12 @@ const Login = () => {
 
   const handleWaLogin = async (e) => {
     e.preventDefault();
-    if (!waPhone) {
-      toast.error('Mohon isi nomor WhatsApp');
+    if (!waForm.phone || !waForm.password) {
+      toast.error('Mohon isi nomor WhatsApp dan password');
       return;
     }
-    const result = await login(waPhone, 'password123');
+
+    const result = await login(waForm.phone, waForm.password);
     if (result.success) {
       toast.success('Berhasil masuk via WhatsApp!');
       navigate('/');
@@ -118,12 +120,34 @@ const Login = () => {
                     <Input
                       id="wa-phone"
                       placeholder="628xxxxxxxxxx"
-                      value={waPhone}
-                      onChange={e => setWaPhone(e.target.value)}
+                      value={waForm.phone}
+                      onChange={e => setWaForm(p => ({ ...p, phone: e.target.value }))}
                       className="pl-10 h-12 rounded-xl border-[#E5E7EB] focus:border-[#0A2540] focus:ring-[#0A2540]"
                     />
                   </div>
                   <p className="text-xs text-[#9CA3AF]">Gunakan format internasional (628xxx)</p>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="wa-password" className="text-sm font-medium" style={{ color: '#111827' }}>Password</Label>
+                  <div className="relative">
+                    <Lock size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-[#9CA3AF]" />
+                    <Input
+                      id="wa-password"
+                      type={showWaPassword ? 'text' : 'password'}
+                      placeholder="Masukkan password"
+                      value={waForm.password}
+                      onChange={e => setWaForm(p => ({ ...p, password: e.target.value }))}
+                      className="pl-10 pr-10 h-12 rounded-xl border-[#E5E7EB] focus:border-[#0A2540] focus:ring-[#0A2540]"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowWaPassword(!showWaPassword)}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-[#9CA3AF] hover:text-[#6B7280]"
+                    >
+                      {showWaPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                    </button>
+                  </div>
                 </div>
 
                 <Button
@@ -163,7 +187,7 @@ const Login = () => {
                     <Lock size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-[#9CA3AF]" />
                     <Input
                       id="password"
-                      type={showPassword ? 'text' : 'password'}
+                      type={showEmailPassword ? 'text' : 'password'}
                       placeholder="Masukkan password"
                       value={emailForm.password}
                       onChange={e => setEmailForm(p => ({ ...p, password: e.target.value }))}
@@ -171,10 +195,10 @@ const Login = () => {
                     />
                     <button
                       type="button"
-                      onClick={() => setShowPassword(!showPassword)}
+                      onClick={() => setShowEmailPassword(!showEmailPassword)}
                       className="absolute right-3 top-1/2 -translate-y-1/2 text-[#9CA3AF] hover:text-[#6B7280]"
                     >
-                      {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                      {showEmailPassword ? <EyeOff size={18} /> : <Eye size={18} />}
                     </button>
                   </div>
                 </div>

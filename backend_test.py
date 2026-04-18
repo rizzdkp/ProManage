@@ -7,14 +7,17 @@ Tests all backend endpoints with realistic Indonesian data
 import requests
 import json
 import sys
+import os
 from datetime import datetime, timedelta
 import uuid
 
 # Configuration
-BASE_URL = "https://pm-app-indo.preview.emergentagent.com/api"
+BASE_URL = os.environ.get("PROMANAGE_API_BASE_URL", "http://localhost:8000/api").rstrip("/")
+TEST_IDENTIFIER = os.environ.get("PROMANAGE_TEST_IDENTIFIER", "")
+TEST_PASSWORD = os.environ.get("PROMANAGE_TEST_PASSWORD", "")
 TEST_CREDENTIALS = {
-    "identifier": "manager@promanage.id",
-    "password": "password123"
+    "identifier": TEST_IDENTIFIER,
+    "password": TEST_PASSWORD,
 }
 
 class ProManageAPITester:
@@ -88,6 +91,16 @@ class ProManageAPITester:
     def test_auth_login(self):
         """Test login endpoint"""
         try:
+            if not TEST_IDENTIFIER or not TEST_PASSWORD:
+                self.log_result(
+                    "auth",
+                    "login",
+                    False,
+                    None,
+                    "Set PROMANAGE_TEST_IDENTIFIER dan PROMANAGE_TEST_PASSWORD sebelum menjalankan test.",
+                )
+                return False
+
             response = self.make_request("POST", "/auth/login", TEST_CREDENTIALS, use_auth=False)
             
             if response and response.status_code == 200:

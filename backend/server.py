@@ -6,11 +6,10 @@ import os
 import logging
 from pathlib import Path
 from typing import List, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 
 from models import (
-    RegisterInput, LoginInput, AuthResponse, UserInDB, UserOut, UserUpdate, PasswordChange,
-    CreateUserInput,
+    RegisterInput, CreateUserInput, LoginInput, AuthResponse, UserInDB, UserOut, UserUpdate, PasswordChange,
     ProjectCreate, ProjectUpdate, ProjectInDB,
     TaskCreate, TaskUpdate, TaskInDB,
     SubtaskCreate, SubtaskUpdate, SubtaskInDB,
@@ -27,6 +26,23 @@ mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ.get('DB_NAME', 'promanage')]
 
+APP_ENV = os.environ.get("APP_ENV", "development").lower()
+ALLOW_PUBLIC_REGISTER = os.environ.get("ALLOW_PUBLIC_REGISTER", "false").lower() == "true"
+SINGLE_ADMIN_ONLY = os.environ.get("SINGLE_ADMIN_ONLY", "true").lower() == "true"
+BOOTSTRAP_ADMIN_NAME = os.environ.get("BOOTSTRAP_ADMIN_NAME", "Administrator")
+BOOTSTRAP_ADMIN_EMAIL = os.environ.get("BOOTSTRAP_ADMIN_EMAIL", "")
+BOOTSTRAP_ADMIN_PHONE = os.environ.get("BOOTSTRAP_ADMIN_PHONE", "")
+BOOTSTRAP_ADMIN_PASSWORD = os.environ.get("BOOTSTRAP_ADMIN_PASSWORD", "")
+
+cors_origins_raw = os.environ.get("CORS_ORIGINS", "http://localhost:3000")
+CORS_ORIGINS = [origin.strip() for origin in cors_origins_raw.split(",") if origin.strip()]
+CORS_ALLOW_CREDENTIALS = os.environ.get("CORS_ALLOW_CREDENTIALS", "false").lower() == "true"
+
+ALLOWED_ROLES = {"Manager", "Admin", "Team Lead", "Anggota Tim"}
+ALLOWED_TASK_STATUSES = {"Belum Mulai", "Dikerjakan", "Selesai"}
+ALLOWED_TASK_PRIORITIES = {"Rendah", "Sedang", "Tinggi"}
+ALLOWED_PROJECT_STATUSES = {"Aktif", "Selesai", "Tertunda"}
+
 app = FastAPI()
 api_router = APIRouter(prefix="/api")
 
@@ -40,6 +56,61 @@ def user_to_out(u: dict) -> dict:
     return {k: v for k, v in u.items() if k not in ('password_hash', '_id')}
 
 
+def normalize_email(value: Optional[str]) -> str:
+    return (value or "").strip().lower()
+
+
+def normalize_phone(value: str) -> str:
+    return (value or "").strip()
+
+
+async def ensure_bootstrap_admin() -> None:
+    users_total_count = await db.users.count_documents({})
+    if users_total_count > 0:
+        return
+
+    bootstrap_name = (BOOTSTRAP_ADMIN_NAME or "Administrator").strip() or "Administrator"
+    bootstrap_email = normalize_email(BOOTSTRAP_ADMIN_EMAIL) or None
+    bootstrap_phone = normalize_phone(BOOTSTRAP_ADMIN_PHONE)
+    bootstrap_password = (BOOTSTRAP_ADMIN_PASSWORD or "").strip()
+
+    if not bootstrap_phone or not bootstrap_password:
+        logger.warning("Collection users kosong, tetapi BOOTSTRAP_ADMIN_PHONE/BOOTSTRAP_ADMIN_PASSWORD belum di-set.")
+        return
+
+    admin = UserInDB(
+        name=bootstrap_name,
+        role="Admin",
+        phone=bootstrap_phone,
+        email=bootstrap_email,
+        password_hash=hash_password(bootstrap_password),
+    )
+    await db.users.insert_one(admin.dict())
+    logger.info("Bootstrap admin dibuat untuk %s", bootstrap_email or bootstrap_phone)
+
+
+def parse_iso_datetime(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        normalized = value.strip()
+        if len(normalized) == 10:
+            normalized = f"{normalized}T00:00:00Z"
+        if normalized.endswith("Z"):
+            normalized = normalized[:-1] + "+00:00"
+        return datetime.fromisoformat(normalized)
+    except (TypeError, ValueError):
+        return None
+
+
+def can_manage_project(current: dict, project: dict) -> bool:
+    if current.get("role") in ("Manager", "Admin"):
+        return True
+    if project.get("createdBy") == current.get("sub"):
+        return True
+    return current.get("sub") in (project.get("teamMembers") or [])
+
+
 async def compute_project_progress(project_id: str) -> int:
     tasks = await db.tasks.find({"projectId": project_id}).to_list(1000)
     if not tasks:
@@ -48,12 +119,14 @@ async def compute_project_progress(project_id: str) -> int:
     return round((done / len(tasks)) * 100)
 
 
-async def create_notification(ntype: str, message: str, target_email: str, task_id: str = None):
+async def create_notification(ntype: str, message: str, target_user: dict, task_id: str = None):
+    target_email = normalize_email(target_user.get("email"))
     notif = NotificationInDB(
         type=ntype,
         taskId=task_id,
         message=message,
-        targetEmail=target_email,
+        targetUserId=target_user["id"],
+        targetEmail=target_email or None,
     )
     await db.notifications.insert_one(notif.dict())
 
@@ -61,17 +134,34 @@ async def create_notification(ntype: str, message: str, target_email: str, task_
 # ===== AUTH =====
 @api_router.post("/auth/register")
 async def register(data: RegisterInput):
-    existing = await db.users.find_one({"$or": [{"phone": data.phone}, {"email": data.email}]})
+    active_users_count = await db.users.count_documents({"deletedAt": None})
+    if active_users_count > 0 and not ALLOW_PUBLIC_REGISTER:
+        raise HTTPException(status_code=403, detail="Registrasi publik dinonaktifkan. Hubungi admin.")
+
+    phone = normalize_phone(data.phone)
+    email = normalize_email(data.email) or None
+    unique_filters = [{"phone": phone}]
+    if email:
+        unique_filters.append({"email": email})
+
+    existing = await db.users.find_one({"$or": unique_filters, "deletedAt": None})
     if existing:
         raise HTTPException(status_code=400, detail="Nomor WA atau email sudah terdaftar")
-    # First user in the system becomes Manager
-    users_count = await db.users.count_documents({})
-    role = "Manager" if users_count == 0 else "Anggota Tim"
+
+    role = "Anggota Tim"
+    if active_users_count == 0:
+        role = "Admin"
+
+    if role == "Admin" and SINGLE_ADMIN_ONLY:
+        admin_count = await db.users.count_documents({"role": "Admin", "deletedAt": None})
+        if admin_count > 0:
+            raise HTTPException(status_code=400, detail="Akun Admin utama sudah ada. Hanya 1 akun Admin diperbolehkan.")
+
     user = UserInDB(
         name=data.name,
-        phone=data.phone,
-        email=data.email or "",
         role=role,
+        phone=phone,
+        email=email,
         password_hash=hash_password(data.password),
     )
     await db.users.insert_one(user.dict())
@@ -81,8 +171,16 @@ async def register(data: RegisterInput):
 
 @api_router.post("/auth/login")
 async def login(data: LoginInput):
+    identifier = (data.identifier or "").strip()
+    if not identifier:
+        raise HTTPException(status_code=400, detail="Identifier wajib diisi")
+
     user = await db.users.find_one({
-        "$or": [{"email": data.identifier}, {"phone": data.identifier}],
+        "$or": [
+            {"email": normalize_email(identifier)},
+            {"email": identifier},
+            {"phone": identifier},
+        ],
         "deletedAt": None
     })
     if not user or not verify_password(data.password, user.get('password_hash', '')):
@@ -110,16 +208,31 @@ async def get_users(current=Depends(get_current_user)):
 async def create_user(data: CreateUserInput, current=Depends(get_current_user)):
     if current["role"] not in ("Manager", "Admin"):
         raise HTTPException(status_code=403, detail="Tidak memiliki izin")
-    existing = await db.users.find_one({"$or": [{"phone": data.phone}, {"email": data.email}]})
+
+    role = (data.role or "Anggota Tim").strip()
+    if role not in ALLOWED_ROLES:
+        raise HTTPException(status_code=400, detail="Role tidak valid")
+
+    phone = normalize_phone(data.phone)
+    email = normalize_email(data.email) or None
+    unique_filters = [{"phone": phone}]
+    if email:
+        unique_filters.append({"email": email})
+
+    existing = await db.users.find_one({"$or": unique_filters, "deletedAt": None})
     if existing:
         raise HTTPException(status_code=400, detail="Nomor WA atau email sudah terdaftar")
-    valid_roles = ["Admin", "Team Lead", "Anggota Tim"]
-    role = data.role if data.role in valid_roles else "Anggota Tim"
+
+    if role == "Admin" and SINGLE_ADMIN_ONLY:
+        admin_count = await db.users.count_documents({"role": "Admin", "deletedAt": None})
+        if admin_count > 0:
+            raise HTTPException(status_code=400, detail="Akun Admin utama sudah ada. Hanya 1 akun Admin diperbolehkan.")
+
     user = UserInDB(
         name=data.name,
-        phone=data.phone,
-        email=data.email or "",
         role=role,
+        phone=phone,
+        email=email,
         password_hash=hash_password(data.password),
         createdBy=current["sub"],
     )
@@ -143,24 +256,51 @@ async def get_user(user_id: str, current=Depends(get_current_user)):
 
 @api_router.put("/users/{user_id}")
 async def update_user(user_id: str, data: UserUpdate, current=Depends(get_current_user)):
+    user = await db.users.find_one({"id": user_id, "deletedAt": None})
+    if not user:
+        raise HTTPException(status_code=404, detail="User tidak ditemukan")
+
     if current["sub"] != user_id and current["role"] not in ("Manager", "Admin"):
         raise HTTPException(status_code=403, detail="Tidak memiliki izin")
+
     updates = {k: v for k, v in data.dict().items() if v is not None}
     if not updates:
         raise HTTPException(status_code=400, detail="Tidak ada field yang diubah")
-    await db.users.update_one({"id": user_id}, {"$set": updates})
-    user = await db.users.find_one({"id": user_id})
-    return user_to_out(user)
+
+    if "email" in updates:
+        updates["email"] = normalize_email(updates["email"]) or None
+    if "phone" in updates:
+        updates["phone"] = normalize_phone(updates["phone"])
+
+    unique_filters = []
+    if updates.get("phone"):
+        unique_filters.append({"phone": updates["phone"]})
+    if updates.get("email"):
+        unique_filters.append({"email": updates["email"]})
+    if unique_filters:
+        existing = await db.users.find_one({
+            "id": {"$ne": user_id},
+            "deletedAt": None,
+            "$or": unique_filters,
+        })
+        if existing:
+            raise HTTPException(status_code=400, detail="Nomor WA atau email sudah terdaftar")
+
+    await db.users.update_one({"id": user_id, "deletedAt": None}, {"$set": updates})
+    updated_user = await db.users.find_one({"id": user_id, "deletedAt": None})
+    return user_to_out(updated_user)
 
 
 @api_router.put("/users/{user_id}/password")
 async def change_password(user_id: str, data: PasswordChange, current=Depends(get_current_user)):
     if current["sub"] != user_id:
         raise HTTPException(status_code=403, detail="Tidak memiliki izin")
-    user = await db.users.find_one({"id": user_id})
+
+    user = await db.users.find_one({"id": user_id, "deletedAt": None})
     if not user or not verify_password(data.currentPassword, user.get('password_hash', '')):
         raise HTTPException(status_code=400, detail="Password saat ini tidak benar")
-    await db.users.update_one({"id": user_id}, {"$set": {"password_hash": hash_password(data.newPassword)}})
+
+    await db.users.update_one({"id": user_id, "deletedAt": None}, {"$set": {"password_hash": hash_password(data.newPassword)}})
     return {"message": "Password berhasil diubah"}
 
 
@@ -168,14 +308,37 @@ async def change_password(user_id: str, data: PasswordChange, current=Depends(ge
 async def delete_user(user_id: str, current=Depends(get_current_user)):
     if current["role"] not in ("Manager", "Admin"):
         raise HTTPException(status_code=403, detail="Tidak memiliki izin")
-    await db.users.update_one({"id": user_id}, {"$set": {"deletedAt": datetime.utcnow().isoformat() + "Z"}})
+
+    user = await db.users.find_one({"id": user_id, "deletedAt": None})
+    if not user:
+        raise HTTPException(status_code=404, detail="User tidak ditemukan")
+
+    if SINGLE_ADMIN_ONLY and user.get("role") == "Admin":
+        admin_count = await db.users.count_documents({"role": "Admin", "deletedAt": None})
+        if admin_count <= 1:
+            raise HTTPException(status_code=400, detail="Akun Admin terakhir tidak boleh dihapus")
+
+    result = await db.users.update_one(
+        {"id": user_id, "deletedAt": None},
+        {"$set": {"deletedAt": datetime.utcnow().isoformat() + "Z"}},
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="User tidak ditemukan")
+
     return {"message": "Akun berhasil dihapus"}
 
 
 # ===== PROJECTS =====
 @api_router.get("/projects")
 async def get_projects(current=Depends(get_current_user)):
-    projects = await db.projects.find({"deletedAt": None}).to_list(1000)
+    project_query = {"deletedAt": None}
+    if current.get("role") not in ("Manager", "Admin"):
+        project_query["$or"] = [
+            {"createdBy": current["sub"]},
+            {"teamMembers": current["sub"]},
+        ]
+
+    projects = await db.projects.find(project_query).to_list(1000)
     for p in projects:
         p['progress'] = await compute_project_progress(p['id'])
         p.pop('_id', None)
@@ -205,6 +368,10 @@ async def get_project(project_id: str, current=Depends(get_current_user)):
     project = await db.projects.find_one({"id": project_id, "deletedAt": None})
     if not project:
         raise HTTPException(status_code=404, detail="Proyek tidak ditemukan")
+
+    if not can_manage_project(current, project):
+        raise HTTPException(status_code=403, detail="Tidak memiliki izin")
+
     project['progress'] = await compute_project_progress(project_id)
     project.pop('_id', None)
     return project
@@ -215,10 +382,25 @@ async def update_project(project_id: str, data: ProjectUpdate, current=Depends(g
     project = await db.projects.find_one({"id": project_id, "deletedAt": None})
     if not project:
         raise HTTPException(status_code=404, detail="Proyek tidak ditemukan")
+
+    if not can_manage_project(current, project):
+        raise HTTPException(status_code=403, detail="Tidak memiliki izin")
+
     updates = {k: v for k, v in data.dict().items() if v is not None}
     if not updates:
         raise HTTPException(status_code=400, detail="Tidak ada field yang diubah")
-    await db.projects.update_one({"id": project_id}, {"$set": updates})
+
+    if "status" in updates and updates["status"] not in ALLOWED_PROJECT_STATUSES:
+        raise HTTPException(status_code=400, detail="Status proyek tidak valid")
+
+    if "teamMembers" in updates:
+        member_ids = list(dict.fromkeys(updates["teamMembers"] or []))
+        users = await db.users.find({"id": {"$in": member_ids}, "deletedAt": None}).to_list(max(len(member_ids), 1))
+        if len(users) != len(member_ids):
+            raise HTTPException(status_code=400, detail="Terdapat anggota tim yang tidak valid")
+        updates["teamMembers"] = member_ids
+
+    await db.projects.update_one({"id": project_id, "deletedAt": None}, {"$set": updates})
     updated = await db.projects.find_one({"id": project_id})
     updated['progress'] = await compute_project_progress(project_id)
     updated.pop('_id', None)
@@ -229,7 +411,14 @@ async def update_project(project_id: str, data: ProjectUpdate, current=Depends(g
 async def delete_project(project_id: str, current=Depends(get_current_user)):
     if current["role"] not in ("Manager", "Admin"):
         raise HTTPException(status_code=403, detail="Tidak memiliki izin")
-    await db.projects.update_one({"id": project_id}, {"$set": {"deletedAt": datetime.utcnow().isoformat() + "Z"}})
+
+    result = await db.projects.update_one(
+        {"id": project_id, "deletedAt": None},
+        {"$set": {"deletedAt": datetime.utcnow().isoformat() + "Z"}},
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Proyek tidak ditemukan")
+
     return {"message": "Proyek berhasil dihapus"}
 
 
@@ -238,7 +427,23 @@ async def delete_project(project_id: str, current=Depends(get_current_user)):
 async def get_tasks(projectId: Optional[str] = None, current=Depends(get_current_user)):
     query = {}
     if projectId:
+        project = await db.projects.find_one({"id": projectId, "deletedAt": None})
+        if not project:
+            raise HTTPException(status_code=404, detail="Proyek tidak ditemukan")
+        if not can_manage_project(current, project):
+            raise HTTPException(status_code=403, detail="Tidak memiliki akses ke proyek ini")
         query["projectId"] = projectId
+    elif current.get("role") not in ("Manager", "Admin"):
+        projects = await db.projects.find({
+            "deletedAt": None,
+            "$or": [
+                {"createdBy": current["sub"]},
+                {"teamMembers": current["sub"]},
+            ],
+        }).to_list(1000)
+        project_ids = [p["id"] for p in projects]
+        query["projectId"] = {"$in": project_ids}
+
     tasks = await db.tasks.find(query).to_list(1000)
     for t in tasks:
         t.pop('_id', None)
@@ -247,6 +452,24 @@ async def get_tasks(projectId: Optional[str] = None, current=Depends(get_current
 
 @api_router.post("/tasks")
 async def create_task(data: TaskCreate, current=Depends(get_current_user)):
+    project = await db.projects.find_one({"id": data.projectId, "deletedAt": None})
+    if not project:
+        raise HTTPException(status_code=404, detail="Proyek tidak ditemukan")
+
+    if not can_manage_project(current, project):
+        raise HTTPException(status_code=403, detail="Tidak memiliki akses ke proyek ini")
+
+    if data.priority not in ALLOWED_TASK_PRIORITIES:
+        raise HTTPException(status_code=400, detail="Prioritas tugas tidak valid")
+
+    assignee_user = None
+    if data.assignee:
+        assignee_user = await db.users.find_one({"id": data.assignee, "deletedAt": None})
+        if not assignee_user:
+            raise HTTPException(status_code=400, detail="Assignee tidak ditemukan")
+        if data.assignee not in (project.get("teamMembers") or []):
+            raise HTTPException(status_code=400, detail="Assignee harus merupakan anggota proyek")
+
     task = TaskInDB(
         projectId=data.projectId,
         name=data.name,
@@ -260,15 +483,14 @@ async def create_task(data: TaskCreate, current=Depends(get_current_user)):
     result.pop('_id', None)
 
     # Notify assignee
-    if data.assignee:
-        assignee_user = await db.users.find_one({"id": data.assignee})
-        if assignee_user:
-            await create_notification(
-                "task_assigned",
-                f'Anda ditugaskan pada "{data.name}"',
-                assignee_user.get('email', ''),
-                task.id,
-            )
+    if assignee_user:
+        await create_notification(
+            "task_assigned",
+            f'Anda ditugaskan pada "{data.name}"',
+            assignee_user,
+            task.id,
+        )
+
     return result
 
 
@@ -277,6 +499,30 @@ async def update_task(task_id: str, data: TaskUpdate, current=Depends(get_curren
     task = await db.tasks.find_one({"id": task_id})
     if not task:
         raise HTTPException(status_code=404, detail="Tugas tidak ditemukan")
+
+    project = await db.projects.find_one({"id": task.get("projectId"), "deletedAt": None})
+    if not project:
+        raise HTTPException(status_code=404, detail="Proyek tugas tidak ditemukan")
+
+    if not can_manage_project(current, project) and task.get("assignee") != current.get("sub"):
+        raise HTTPException(status_code=403, detail="Tidak memiliki izin")
+
+    if data.status and data.status not in ALLOWED_TASK_STATUSES:
+        raise HTTPException(status_code=400, detail="Status tugas tidak valid")
+
+    if data.priority and data.priority not in ALLOWED_TASK_PRIORITIES:
+        raise HTTPException(status_code=400, detail="Prioritas tugas tidak valid")
+
+    assignee_user = None
+    if data.assignee is not None:
+        assignee = data.assignee.strip() if isinstance(data.assignee, str) else data.assignee
+        if assignee:
+            assignee_user = await db.users.find_one({"id": assignee, "deletedAt": None})
+            if not assignee_user:
+                raise HTTPException(status_code=400, detail="Assignee tidak ditemukan")
+            if project and assignee not in (project.get("teamMembers") or []):
+                raise HTTPException(status_code=400, detail="Assignee harus merupakan anggota proyek")
+        data.assignee = assignee or None
 
     # Business rule: reject Selesai if subtasks incomplete
     if data.status == "Selesai":
@@ -294,16 +540,19 @@ async def update_task(task_id: str, data: TaskUpdate, current=Depends(get_curren
     updated = await db.tasks.find_one({"id": task_id})
     updated.pop('_id', None)
 
+    notify_target_user = assignee_user
+    if not notify_target_user and updated.get('assignee'):
+        notify_target_user = await db.users.find_one({"id": updated['assignee'], "deletedAt": None})
+
     # Notify on status change
-    if data.status and data.status != old_status and task.get('assignee'):
-        assignee_user = await db.users.find_one({"id": task['assignee']})
-        if assignee_user:
-            await create_notification(
-                "status_changed",
-                f'Status "{task["name"]}" diubah ke {data.status}',
-                assignee_user.get('email', ''),
-                task_id,
-            )
+    if data.status and data.status != old_status and notify_target_user:
+        await create_notification(
+            "status_changed",
+            f'Status "{task["name"]}" diubah ke {data.status}',
+            notify_target_user,
+            task_id,
+        )
+
     return updated
 
 
@@ -312,7 +561,28 @@ async def update_task(task_id: str, data: TaskUpdate, current=Depends(get_curren
 async def get_subtasks(taskId: Optional[str] = None, current=Depends(get_current_user)):
     query = {}
     if taskId:
+        task = await db.tasks.find_one({"id": taskId})
+        if not task:
+            raise HTTPException(status_code=404, detail="Tugas tidak ditemukan")
+
+        project = await db.projects.find_one({"id": task.get("projectId"), "deletedAt": None})
+        if not project:
+            raise HTTPException(status_code=404, detail="Proyek tidak ditemukan")
+        if not can_manage_project(current, project):
+            raise HTTPException(status_code=403, detail="Tidak memiliki izin")
+
         query["taskId"] = taskId
+    elif current.get("role") not in ("Manager", "Admin"):
+        projects = await db.projects.find({
+            "deletedAt": None,
+            "$or": [
+                {"createdBy": current["sub"]},
+                {"teamMembers": current["sub"]},
+            ],
+        }).to_list(1000)
+        project_ids = [p["id"] for p in projects]
+        query["projectId"] = {"$in": project_ids}
+
     subtasks = await db.subtasks.find(query).to_list(1000)
     for s in subtasks:
         s.pop('_id', None)
@@ -321,6 +591,20 @@ async def get_subtasks(taskId: Optional[str] = None, current=Depends(get_current
 
 @api_router.post("/subtasks")
 async def create_subtask(data: SubtaskCreate, current=Depends(get_current_user)):
+    task = await db.tasks.find_one({"id": data.taskId})
+    if not task:
+        raise HTTPException(status_code=404, detail="Tugas tidak ditemukan")
+
+    if task.get("projectId") != data.projectId:
+        raise HTTPException(status_code=400, detail="taskId dan projectId tidak cocok")
+
+    project = await db.projects.find_one({"id": data.projectId, "deletedAt": None})
+    if not project:
+        raise HTTPException(status_code=404, detail="Proyek tidak ditemukan")
+
+    if not can_manage_project(current, project):
+        raise HTTPException(status_code=403, detail="Tidak memiliki izin")
+
     subtask = SubtaskInDB(
         taskId=data.taskId,
         title=data.title,
@@ -334,6 +618,16 @@ async def create_subtask(data: SubtaskCreate, current=Depends(get_current_user))
 
 @api_router.put("/subtasks/{subtask_id}")
 async def update_subtask(subtask_id: str, data: SubtaskUpdate, current=Depends(get_current_user)):
+    subtask = await db.subtasks.find_one({"id": subtask_id})
+    if not subtask:
+        raise HTTPException(status_code=404, detail="Subtask tidak ditemukan")
+
+    project = await db.projects.find_one({"id": subtask.get("projectId"), "deletedAt": None})
+    if not project:
+        raise HTTPException(status_code=404, detail="Proyek tidak ditemukan")
+    if not can_manage_project(current, project):
+        raise HTTPException(status_code=403, detail="Tidak memiliki izin")
+
     updates = {k: v for k, v in data.dict().items() if v is not None}
     if not updates:
         raise HTTPException(status_code=400, detail="Tidak ada field yang diubah")
@@ -347,6 +641,16 @@ async def update_subtask(subtask_id: str, data: SubtaskUpdate, current=Depends(g
 
 @api_router.delete("/subtasks/{subtask_id}")
 async def delete_subtask(subtask_id: str, current=Depends(get_current_user)):
+    subtask = await db.subtasks.find_one({"id": subtask_id})
+    if not subtask:
+        raise HTTPException(status_code=404, detail="Subtask tidak ditemukan")
+
+    project = await db.projects.find_one({"id": subtask.get("projectId"), "deletedAt": None})
+    if not project:
+        raise HTTPException(status_code=404, detail="Proyek tidak ditemukan")
+    if not can_manage_project(current, project):
+        raise HTTPException(status_code=403, detail="Tidak memiliki izin")
+
     result = await db.subtasks.delete_one({"id": subtask_id})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Subtask tidak ditemukan")
@@ -356,6 +660,16 @@ async def delete_subtask(subtask_id: str, current=Depends(get_current_user)):
 # ===== COMMENTS =====
 @api_router.get("/comments")
 async def get_comments(taskId: str = Query(...), current=Depends(get_current_user)):
+    task = await db.tasks.find_one({"id": taskId})
+    if not task:
+        raise HTTPException(status_code=404, detail="Tugas tidak ditemukan")
+
+    project = await db.projects.find_one({"id": task.get("projectId"), "deletedAt": None})
+    if not project:
+        raise HTTPException(status_code=404, detail="Proyek tidak ditemukan")
+    if not can_manage_project(current, project):
+        raise HTTPException(status_code=403, detail="Tidak memiliki izin")
+
     comments = await db.comments.find({"taskId": taskId}).to_list(1000)
     for c in comments:
         c.pop('_id', None)
@@ -364,7 +678,17 @@ async def get_comments(taskId: str = Query(...), current=Depends(get_current_use
 
 @api_router.post("/comments")
 async def create_comment(data: CommentCreate, current=Depends(get_current_user)):
-    user = await db.users.find_one({"id": current["sub"]})
+    task = await db.tasks.find_one({"id": data.taskId})
+    if not task:
+        raise HTTPException(status_code=404, detail="Tugas tidak ditemukan")
+
+    project = await db.projects.find_one({"id": task.get("projectId"), "deletedAt": None})
+    if not project:
+        raise HTTPException(status_code=404, detail="Proyek tidak ditemukan")
+    if not can_manage_project(current, project):
+        raise HTTPException(status_code=403, detail="Tidak memiliki izin")
+
+    user = await db.users.find_one({"id": current["sub"], "deletedAt": None})
     comment = CommentInDB(
         taskId=data.taskId,
         actor=user['name'] if user else 'Unknown',
@@ -375,14 +699,13 @@ async def create_comment(data: CommentCreate, current=Depends(get_current_user))
     result.pop('_id', None)
 
     # Notify task assignee about new comment
-    task = await db.tasks.find_one({"id": data.taskId})
     if task and task.get('assignee') and task['assignee'] != current["sub"]:
-        assignee_user = await db.users.find_one({"id": task['assignee']})
+        assignee_user = await db.users.find_one({"id": task['assignee'], "deletedAt": None})
         if assignee_user:
             await create_notification(
                 "comment",
                 f'Komentar baru pada "{task["name"]}"',
-                assignee_user.get('email', ''),
+                assignee_user,
                 data.taskId,
             )
     return result
@@ -391,10 +714,16 @@ async def create_comment(data: CommentCreate, current=Depends(get_current_user))
 # ===== NOTIFICATIONS =====
 @api_router.get("/notifications")
 async def get_notifications(current=Depends(get_current_user)):
-    user = await db.users.find_one({"id": current["sub"]})
+    user = await db.users.find_one({"id": current["sub"], "deletedAt": None})
     if not user:
         return []
-    notifs = await db.notifications.find({"targetEmail": user.get('email', '')}).sort("timestamp", -1).to_list(50)
+
+    ownership_filters = [{"targetUserId": current["sub"]}]
+    normalized_email = normalize_email(user.get("email"))
+    if normalized_email:
+        ownership_filters.append({"targetEmail": normalized_email})
+
+    notifs = await db.notifications.find({"$or": ownership_filters}).sort("timestamp", -1).to_list(50)
     for n in notifs:
         n.pop('_id', None)
     return notifs
@@ -402,7 +731,22 @@ async def get_notifications(current=Depends(get_current_user)):
 
 @api_router.patch("/notifications/{notif_id}/read")
 async def mark_notification_read(notif_id: str, current=Depends(get_current_user)):
-    await db.notifications.update_one({"id": notif_id}, {"$set": {"isRead": True}})
+    user = await db.users.find_one({"id": current["sub"], "deletedAt": None})
+    if not user:
+        raise HTTPException(status_code=404, detail="User tidak ditemukan")
+
+    ownership_filters = [{"targetUserId": current["sub"]}]
+    normalized_email = normalize_email(user.get("email"))
+    if normalized_email:
+        ownership_filters.append({"targetEmail": normalized_email})
+
+    result = await db.notifications.update_one(
+        {"id": notif_id, "$or": ownership_filters},
+        {"$set": {"isRead": True}},
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Notifikasi tidak ditemukan")
+
     return {"message": "OK"}
 
 
@@ -425,7 +769,7 @@ async def get_stats(current=Depends(get_current_user)):
     projects = await db.projects.find({"deletedAt": None}).to_list(1000)
     tasks = await db.tasks.find().to_list(5000)
     users = await db.users.find({"deletedAt": None}).to_list(1000)
-    now = datetime.utcnow().isoformat()
+    now = datetime.now(timezone.utc)
 
     active = sum(1 for p in projects if p.get('status') == 'Aktif')
     completed = sum(1 for p in projects if p.get('status') == 'Selesai')
@@ -433,7 +777,11 @@ async def get_stats(current=Depends(get_current_user)):
     completed_tasks = sum(1 for t in tasks if t.get('status') == 'Selesai')
     in_progress = sum(1 for t in tasks if t.get('status') == 'Dikerjakan')
     pending_tasks = sum(1 for t in tasks if t.get('status') == 'Belum Mulai')
-    overdue = sum(1 for t in tasks if t.get('dueDate', '') < now and t.get('status') != 'Selesai')
+    overdue = 0
+    for t in tasks:
+        due = parse_iso_datetime(t.get("dueDate"))
+        if due and due < now and t.get("status") != "Selesai":
+            overdue += 1
 
     return {
         "totalProjects": len(projects),
@@ -447,8 +795,6 @@ async def get_stats(current=Depends(get_current_user)):
         "totalMembers": len(users),
         "overdueCount": overdue,
     }
-
-
 # ===== ROOT =====
 @api_router.get("/")
 async def root():
@@ -460,8 +806,8 @@ app.include_router(api_router)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_credentials=True,
-    allow_origins=["*"],
+    allow_credentials=CORS_ALLOW_CREDENTIALS,
+    allow_origins=CORS_ORIGINS or ["http://localhost:3000"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -471,15 +817,22 @@ app.add_middleware(
 async def startup():
     # Create indexes
     await db.users.create_index("id", unique=True)
-    await db.users.create_index("email")
-    await db.users.create_index("phone")
+    await db.users.create_index(
+        "email",
+        unique=True,
+        partialFilterExpression={"email": {"$type": "string"}},
+    )
+    await db.users.create_index("phone", unique=True)
     await db.projects.create_index("id", unique=True)
     await db.tasks.create_index("id", unique=True)
     await db.tasks.create_index("projectId")
     await db.subtasks.create_index("id", unique=True)
     await db.subtasks.create_index("taskId")
     await db.comments.create_index("taskId")
+    await db.notifications.create_index("id", unique=True)
+    await db.notifications.create_index("targetUserId")
     await db.notifications.create_index("targetEmail")
+    await ensure_bootstrap_admin()
     logger.info("ProManage API started - indexes created")
 
 

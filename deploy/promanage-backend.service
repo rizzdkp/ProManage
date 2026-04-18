@@ -1,0 +1,17 @@
+[Unit]
+Description=ProManage FastAPI Backend
+After=network.target mongod.service
+Wants=network.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/promanage
+EnvironmentFile=/opt/promanage/backend/.env
+ExecStart=/opt/promanage/.venv/bin/python -m uvicorn server:app --app-dir /opt/promanage/backend --host 127.0.0.1 --port 8000
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

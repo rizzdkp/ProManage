@@ -99,7 +99,13 @@ const Dashboard = () => {
     }
     setLoadingCreate(true);
     try {
-      await usersAPI.create({ name: memberForm.name, phone: memberForm.phone, email: memberForm.email || undefined, password: memberForm.password, role: memberForm.role });
+      await usersAPI.create({
+        name: memberForm.name,
+        phone: memberForm.phone,
+        email: memberForm.email || undefined,
+        role: memberForm.role,
+        password: memberForm.password,
+      });
       toast.success('Anggota berhasil ditambahkan!');
       setShowAddMember(false);
       setMemberForm({ name: '', phone: '', email: '', role: '', password: '' });

@@ -5,16 +5,23 @@ Test the business rule: Task cannot be completed if subtasks are incomplete
 
 import requests
 import json
+import os
 
-BASE_URL = "https://pm-app-indo.preview.emergentagent.com/api"
+BASE_URL = os.environ.get("PROMANAGE_API_BASE_URL", "http://localhost:8000/api").rstrip("/")
+TEST_IDENTIFIER = os.environ.get("PROMANAGE_TEST_IDENTIFIER", "")
+TEST_PASSWORD = os.environ.get("PROMANAGE_TEST_PASSWORD", "")
 TEST_CREDENTIALS = {
-    "identifier": "manager@promanage.id",
-    "password": "password123"
+    "identifier": TEST_IDENTIFIER,
+    "password": TEST_PASSWORD,
 }
 
 def test_business_rule():
     """Test the business rule for task completion"""
     session = requests.Session()
+
+    if not TEST_IDENTIFIER or not TEST_PASSWORD:
+        print("Set PROMANAGE_TEST_IDENTIFIER dan PROMANAGE_TEST_PASSWORD sebelum menjalankan test.")
+        return False
     
     # 1. Login to get token
     print("🔐 Logging in...")

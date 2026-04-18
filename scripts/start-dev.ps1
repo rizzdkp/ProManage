@@ -81,6 +81,27 @@ function Start-ManagedProcess {
     }
 }
 
+function Wait-ForPort {
+    param(
+        [int]$Port,
+        [string]$Name,
+        [int]$TimeoutSeconds = 45
+    )
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        $listener = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($listener) {
+            Write-Host "$Name siap di port $Port."
+            return $true
+        }
+        Start-Sleep -Milliseconds 500
+    }
+
+    Write-Warning "$Name belum siap di port $Port setelah ${TimeoutSeconds}s."
+    return $false
+}
+
 if (-not $SkipMongo) {
     if (-not (Test-Path $mongoExe)) {
         Write-Warning "MongoDB binary tidak ditemukan di: $mongoExe"
@@ -99,9 +120,16 @@ if (-not $SkipBackend) {
     $pythonExecutable = $null
     $pythonPrefixArgs = @()
 
-    $python = Get-Command python -CommandType Application -ErrorAction SilentlyContinue
-    if ($python) {
-        $pythonExecutable = $python.Source
+    $venvPython = Join-Path $repoRoot ".venv\Scripts\python.exe"
+    if (Test-Path $venvPython) {
+        $pythonExecutable = $venvPython
+    }
+
+    if (-not $pythonExecutable) {
+        $python = Get-Command python -CommandType Application -ErrorAction SilentlyContinue
+        if ($python) {
+            $pythonExecutable = $python.Source
+        }
     }
 
     if (-not $pythonExecutable) {
@@ -136,6 +164,7 @@ if (-not $SkipBackend) {
     }
 
     Start-ManagedProcess -Name "Backend" -Port 8000 -ExpectedProcessNames @("python", "python3", "python3.12") -FilePath $pythonExecutable -ArgumentList $backendArgs -WorkingDirectory $repoRoot -StdOutFile "" -StdErrFile ""
+    Wait-ForPort -Port 8000 -Name "Backend" | Out-Null
 }
 
 if (-not $SkipFrontend) {
@@ -145,11 +174,12 @@ if (-not $SkipFrontend) {
     }
 
     Start-ManagedProcess -Name "Frontend" -Port 3000 -ExpectedProcessNames @("node", "npm") -FilePath $npm.Source -ArgumentList @("--prefix", "frontend", "start") -WorkingDirectory $repoRoot -StdOutFile "" -StdErrFile ""
+    Wait-ForPort -Port 3000 -Name "Frontend" | Out-Null
 }
 
 Write-Host ""
 Write-Host "Service URLs:"
-Write-Host "  Backend  : http://localhost:8000/api/"
+Write-Host "  Backend  : http://127.0.0.1:8000/api/"
 Write-Host "  Frontend : http://localhost:3000"
 Write-Host ""
 Write-Host "Gunakan scripts/stop-dev.ps1 untuk mematikan service."

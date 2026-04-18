@@ -213,6 +213,11 @@ async def create_user(data: CreateUserInput, current=Depends(get_current_user)):
     if role not in ALLOWED_ROLES:
         raise HTTPException(status_code=400, detail="Role tidak valid")
 
+    if role == "Admin" and SINGLE_ADMIN_ONLY:
+        admin_count = await db.users.count_documents({"role": "Admin", "deletedAt": None})
+        if admin_count > 0:
+            raise HTTPException(status_code=400, detail="Akun Admin utama sudah ada. Hanya 1 akun Admin diperbolehkan.")
+
     phone = normalize_phone(data.phone)
     email = normalize_email(data.email) or None
     unique_filters = [{"phone": phone}]

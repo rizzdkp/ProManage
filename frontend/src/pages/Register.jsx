@@ -29,7 +29,7 @@ const Register = () => {
       toast.error('Password minimal 6 karakter');
       return;
     }
-    const result = await register(form);
+    const result = await register({ name: form.name, phone: form.phone, password: form.password, email: form.email || undefined });
     if (result.success) {
       toast.success('Registrasi berhasil! Selamat datang.');
       navigate('/');

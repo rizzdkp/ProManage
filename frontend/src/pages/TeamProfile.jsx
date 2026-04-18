@@ -1,16 +1,15 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import {
-  User, Mail, Phone, Shield, Save, Lock, Trash2, Edit3, Search
+  User, Mail, Phone, Shield, Save, Lock, Trash2, Search
 } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
-import { Badge } from '../components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '../components/ui/alert-dialog';
 import { useAuth } from '../context/AuthContext';
-import { mockUsers } from '../data/mock';
+import { usersAPI } from '../lib/api';
 import { toast } from 'sonner';
 
 const roleColors = {
@@ -30,11 +29,18 @@ const TeamProfile = () => {
   const [passwordForm, setPasswordForm] = useState({ current: '', newPass: '', confirm: '' });
   const [deleteUserId, setDeleteUserId] = useState(null);
   const [searchMember, setSearchMember] = useState('');
+  const [allUsers, setAllUsers] = useState([]);
+  const [savingProfile, setSavingProfile] = useState(false);
 
-  const activeUsers = mockUsers.filter(u => !u.deletedAt);
-  const filteredUsers = activeUsers.filter(u =>
-    u.name.toLowerCase().includes(searchMember.toLowerCase()) ||
-    u.email.toLowerCase().includes(searchMember.toLowerCase())
+  useEffect(() => {
+    usersAPI.getAll().then(r => setAllUsers(r.data || [])).catch(() => {});
+  }, []);
+
+  const filteredUsers = allUsers.filter(u =>
+    !u.deletedAt && (
+      u.name.toLowerCase().includes(searchMember.toLowerCase()) ||
+      (u.email || '').toLowerCase().includes(searchMember.toLowerCase())
+    )
   );
 
   const groupedUsers = {
@@ -44,12 +50,19 @@ const TeamProfile = () => {
     'Anggota Tim': filteredUsers.filter(u => u.role === 'Anggota Tim'),
   };
 
-  const handleSaveProfile = () => {
-    updateProfile(profileForm);
-    toast.success('Profil berhasil diperbarui!');
+  const handleSaveProfile = async () => {
+    setSavingProfile(true);
+    try {
+      const res = await usersAPI.update(user.id, profileForm);
+      updateProfile(res.data);
+      toast.success('Profil berhasil diperbarui!');
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Gagal memperbarui profil');
+    }
+    setSavingProfile(false);
   };
 
-  const handleResetPassword = () => {
+  const handleResetPassword = async () => {
     if (!passwordForm.current || !passwordForm.newPass || !passwordForm.confirm) {
       toast.error('Semua field harus diisi');
       return;
@@ -58,8 +71,24 @@ const TeamProfile = () => {
       toast.error('Password baru tidak cocok');
       return;
     }
-    toast.success('Password berhasil diubah! (Mock)');
-    setPasswordForm({ current: '', newPass: '', confirm: '' });
+    try {
+      await usersAPI.changePassword(user.id, { currentPassword: passwordForm.current, newPassword: passwordForm.newPass });
+      toast.success('Password berhasil diubah!');
+      setPasswordForm({ current: '', newPass: '', confirm: '' });
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Gagal mengubah password');
+    }
+  };
+
+  const handleDeleteUser = async () => {
+    try {
+      await usersAPI.delete(deleteUserId);
+      toast.success('Akun berhasil dihapus');
+      setDeleteUserId(null);
+      usersAPI.getAll().then(r => setAllUsers(r.data || [])).catch(() => {});
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Gagal menghapus akun');
+    }
   };
 
   const getInitials = (name) => name?.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2) || '?';
@@ -121,8 +150,8 @@ const TeamProfile = () => {
                     <Input value={profileForm.phone} onChange={e => setProfileForm(p => ({ ...p, phone: e.target.value }))} className="pl-10 h-11 rounded-xl" />
                   </div>
                 </div>
-                <Button onClick={handleSaveProfile} className="rounded-xl gap-2 font-semibold" style={{ background: '#0A2540', color: 'white' }}>
-                  <Save size={16} /> Simpan Perubahan
+                <Button onClick={handleSaveProfile} disabled={savingProfile} className="rounded-xl gap-2 font-semibold" style={{ background: '#0A2540', color: 'white' }}>
+                  <Save size={16} /> {savingProfile ? 'Menyimpan...' : 'Simpan Perubahan'}
                 </Button>
               </div>
             </motion.div>
@@ -216,7 +245,7 @@ const TeamProfile = () => {
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel className="rounded-xl">Batal</AlertDialogCancel>
-            <AlertDialogAction className="rounded-xl bg-[#E11D48] hover:bg-[#BE123C]" onClick={() => { toast.success('Akun dihapus (Mock)'); setDeleteUserId(null); }}>Hapus</AlertDialogAction>
+            <AlertDialogAction className="rounded-xl bg-[#E11D48] hover:bg-[#BE123C]" onClick={handleDeleteUser}>Hapus</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

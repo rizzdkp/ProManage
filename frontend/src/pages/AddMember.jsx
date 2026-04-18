@@ -8,6 +8,7 @@ import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { useNavigate } from 'react-router-dom';
+import { usersAPI } from '../lib/api';
 import { toast } from 'sonner';
 
 const AddMember = () => {
@@ -19,15 +20,23 @@ const AddMember = () => {
     role: '',
     password: '',
   });
+  const [submitting, setSubmitting] = useState(false);
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     if (!form.name || !form.phone || !form.role || !form.password) {
       toast.error('Nama, Nomor WA, Role, dan Password wajib diisi');
       return;
     }
-    toast.success(`Anggota "${form.name}" berhasil ditambahkan! (Mock)`);
-    setForm({ name: '', phone: '', email: '', role: '', password: '' });
+    setSubmitting(true);
+    try {
+      await usersAPI.create({ name: form.name, phone: form.phone, email: form.email || undefined, password: form.password });
+      toast.success(`Anggota "${form.name}" berhasil ditambahkan!`);
+      setForm({ name: '', phone: '', email: '', role: '', password: '' });
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Gagal menambah anggota');
+    }
+    setSubmitting(false);
   };
 
   return (
@@ -105,7 +114,7 @@ const AddMember = () => {
               onMouseEnter={e => e.currentTarget.style.background = '#1E3A5F'}
               onMouseLeave={e => e.currentTarget.style.background = '#0A2540'}
             >
-              <UserPlus size={16} /> Tambah Anggota
+              <UserPlus size={16} /> {submitting ? 'Memproses...' : 'Tambah Anggota'}
             </Button>
           </form>
         </div>

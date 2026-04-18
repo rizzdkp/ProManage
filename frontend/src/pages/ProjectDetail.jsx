@@ -1,22 +1,20 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  ArrowLeft, Calendar, Users as UsersIcon, Plus, Trash2, Edit3,
-  ChevronDown, ChevronUp, Send, CheckCircle2, Circle, AlertTriangle,
-  Clock, Filter, Search, MoreVertical, MessageSquare, ListChecks
+  ArrowLeft, Calendar, Plus, Trash2,
+  ChevronDown, Send, Filter, Search, MessageSquare, ListChecks
 } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { Textarea } from '../components/ui/textarea';
-import { Badge } from '../components/ui/badge';
 import { Progress } from '../components/ui/progress';
 import { Checkbox } from '../components/ui/checkbox';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '../components/ui/dialog';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '../components/ui/alert-dialog';
-import { mockProjects, mockTasks, mockSubtasks, mockComments, mockUsers, getUserById, getProjectTasks, getTaskSubtasks, getTaskComments, getProjectMembers } from '../data/mock';
+import { projectsAPI, tasksAPI, subtasksAPI, commentsAPI, usersAPI } from '../lib/api';
 import { useAuth } from '../context/AuthContext';
 import { toast } from 'sonner';
 
@@ -25,7 +23,6 @@ const statusColors = {
   'Dikerjakan': { bg: '#FEF3C7', text: '#92400E', border: '#FDE68A' },
   'Belum Mulai': { bg: '#F3F4F6', text: '#6B7280', border: '#E5E7EB' },
 };
-
 const priorityColors = {
   'Tinggi': { bg: '#FEF2F2', text: '#E11D48' },
   'Sedang': { bg: '#FEF3C7', text: '#D97706' },
@@ -36,9 +33,13 @@ const ProjectDetail = () => {
   const { id } = useParams();
   const navigate = useNavigate();
   const { canManage } = useAuth();
-  const project = mockProjects.find(p => p.id === id);
-  const tasks = getProjectTasks(id);
-  const members = project ? getProjectMembers(project) : [];
+
+  const [project, setProject] = useState(null);
+  const [tasks, setTasks] = useState([]);
+  const [allUsers, setAllUsers] = useState([]);
+  const [subtasksMap, setSubtasksMap] = useState({});
+  const [commentsMap, setCommentsMap] = useState({});
+  const [loading, setLoading] = useState(true);
 
   const [expandedTask, setExpandedTask] = useState(null);
   const [taskFilter, setTaskFilter] = useState('all');
@@ -47,6 +48,50 @@ const ProjectDetail = () => {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [newComment, setNewComment] = useState('');
   const [taskForm, setTaskForm] = useState({ name: '', description: '', dueDate: '', priority: '', assignee: '' });
+  const [loadingAction, setLoadingAction] = useState(false);
+
+  const loadProject = useCallback(async () => {
+    try {
+      const [projRes, tasksRes, usersRes] = await Promise.all([
+        projectsAPI.getById(id),
+        tasksAPI.getAll(id),
+        usersAPI.getAll(),
+      ]);
+      setProject(projRes.data);
+      setTasks(tasksRes.data || []);
+      setAllUsers(usersRes.data || []);
+
+      // Load subtasks and comments for all tasks
+      const taskList = tasksRes.data || [];
+      const subMap = {};
+      const cmtMap = {};
+      await Promise.all(taskList.map(async (t) => {
+        try {
+          const [subRes, cmtRes] = await Promise.all([
+            subtasksAPI.getAll(t.id),
+            commentsAPI.getByTask(t.id),
+          ]);
+          subMap[t.id] = subRes.data || [];
+          cmtMap[t.id] = cmtRes.data || [];
+        } catch { 
+          subMap[t.id] = [];
+          cmtMap[t.id] = [];
+        }
+      }));
+      setSubtasksMap(subMap);
+      setCommentsMap(cmtMap);
+    } catch {
+      toast.error('Gagal memuat data proyek');
+    }
+    setLoading(false);
+  }, [id]);
+
+  useEffect(() => { loadProject(); }, [loadProject]);
+
+  const members = useMemo(() => {
+    if (!project) return [];
+    return (project.teamMembers || []).map(mid => allUsers.find(u => u.id === mid)).filter(Boolean);
+  }, [project, allUsers]);
 
   const filteredTasks = useMemo(() => {
     return tasks.filter(t => {
@@ -55,6 +100,68 @@ const ProjectDetail = () => {
       return matchSearch && matchFilter;
     });
   }, [tasks, taskSearch, taskFilter]);
+
+  const getUserById = (uid) => allUsers.find(u => u.id === uid);
+  const getInitials = (name) => name ? name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2) : '?';
+  const getStatusColor = (status) => statusColors[status] || statusColors['Belum Mulai'];
+  const getPriorityColor = (priority) => priorityColors[priority] || priorityColors['Sedang'];
+
+  const handleAddTask = async () => {
+    if (!taskForm.name || !taskForm.dueDate) {
+      toast.error('Nama dan deadline wajib diisi');
+      return;
+    }
+    setLoadingAction(true);
+    try {
+      await tasksAPI.create({ ...taskForm, projectId: id });
+      toast.success('Tugas berhasil ditambahkan!');
+      setShowAddTask(false);
+      setTaskForm({ name: '', description: '', dueDate: '', priority: '', assignee: '' });
+      loadProject();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Gagal menambah tugas');
+    }
+    setLoadingAction(false);
+  };
+
+  const handleDeleteProject = async () => {
+    try {
+      await projectsAPI.delete(id);
+      toast.success('Proyek berhasil dihapus');
+      navigate('/projects');
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Gagal menghapus proyek');
+    }
+  };
+
+  const handleToggleSubtask = async (subtask) => {
+    try {
+      await subtasksAPI.update(subtask.id, { isDone: !subtask.isDone });
+      loadProject();
+    } catch {
+      toast.error('Gagal mengubah subtask');
+    }
+  };
+
+  const handleAddComment = async (taskId) => {
+    if (!newComment.trim()) return;
+    try {
+      await commentsAPI.create({ taskId, message: newComment });
+      setNewComment('');
+      loadProject();
+      toast.success('Komentar ditambahkan');
+    } catch {
+      toast.error('Gagal menambah komentar');
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-20">
+        <div className="w-8 h-8 border-2 border-[#0A2540] border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
 
   if (!project) {
     return (
@@ -66,9 +173,6 @@ const ProjectDetail = () => {
       </div>
     );
   }
-
-  const getStatusColor = (status) => statusColors[status] || statusColors['Belum Mulai'];
-  const getPriorityColor = (priority) => priorityColors[priority] || priorityColors['Sedang'];
 
   return (
     <div className="space-y-6">
@@ -123,7 +227,7 @@ const ProjectDetail = () => {
             <div className="flex -space-x-2">
               {members.slice(0, 4).map(m => (
                 <div key={m.id} className="w-7 h-7 rounded-full border-2 border-white flex items-center justify-center text-[8px] font-bold text-white" style={{ background: '#D4AF77' }}>
-                  {m.name.split(' ').map(n => n[0]).join('').slice(0, 2)}
+                  {getInitials(m.name)}
                 </div>
               ))}
             </div>
@@ -161,8 +265,8 @@ const ProjectDetail = () => {
           </div>
         ) : (
           filteredTasks.map(task => {
-            const subtasks = getTaskSubtasks(task.id);
-            const comments = getTaskComments(task.id);
+            const subtasks = subtasksMap[task.id] || [];
+            const comments = commentsMap[task.id] || [];
             const assigneeUser = getUserById(task.assignee);
             const sc = getStatusColor(task.status);
             const pc = getPriorityColor(task.priority);
@@ -227,7 +331,7 @@ const ProjectDetail = () => {
                             <div className="space-y-2">
                               {subtasks.map(sub => (
                                 <div key={sub.id} className="flex items-center gap-2.5 text-sm">
-                                  <Checkbox checked={sub.isDone} className="rounded" />
+                                  <Checkbox checked={sub.isDone} onCheckedChange={() => handleToggleSubtask(sub)} className="rounded" />
                                   <span className={sub.isDone ? 'line-through text-[#9CA3AF]' : 'text-[#374151]'}>{sub.title}</span>
                                 </div>
                               ))}
@@ -236,14 +340,14 @@ const ProjectDetail = () => {
                         )}
 
                         {/* Comments */}
-                        {comments.length > 0 && (
-                          <div>
-                            <h5 className="text-xs font-semibold text-[#111827] uppercase tracking-wider mb-2">Komentar ({comments.length})</h5>
+                        <div>
+                          <h5 className="text-xs font-semibold text-[#111827] uppercase tracking-wider mb-2">Komentar ({comments.length})</h5>
+                          {comments.length > 0 && (
                             <div className="space-y-3 mb-3">
                               {comments.map(c => (
                                 <div key={c.id} className="flex gap-2.5">
                                   <div className="w-7 h-7 rounded-full flex items-center justify-center text-[8px] font-bold text-white flex-shrink-0" style={{ background: '#0A2540' }}>
-                                    {c.actor.split(' ').map(n => n[0]).join('').slice(0, 2)}
+                                    {(c.actor || '').split(' ').map(n => n[0]).join('').slice(0, 2)}
                                   </div>
                                   <div className="flex-1 bg-[#F9FAFB] rounded-xl p-3">
                                     <div className="flex items-center gap-2 mb-1">
@@ -255,14 +359,14 @@ const ProjectDetail = () => {
                                 </div>
                               ))}
                             </div>
-                            <div className="flex gap-2">
-                              <Input placeholder="Tulis komentar..." value={newComment} onChange={e => setNewComment(e.target.value)} className="h-9 rounded-xl text-sm" />
-                              <Button size="sm" className="rounded-xl h-9 px-3" style={{ background: '#0A2540', color: 'white' }} onClick={() => { toast.success('Komentar ditambahkan (Mock)'); setNewComment(''); }}>
-                                <Send size={14} />
-                              </Button>
-                            </div>
+                          )}
+                          <div className="flex gap-2">
+                            <Input placeholder="Tulis komentar..." value={newComment} onChange={e => setNewComment(e.target.value)} className="h-9 rounded-xl text-sm" onKeyDown={e => e.key === 'Enter' && handleAddComment(task.id)} />
+                            <Button size="sm" className="rounded-xl h-9 px-3" style={{ background: '#0A2540', color: 'white' }} onClick={() => handleAddComment(task.id)}>
+                              <Send size={14} />
+                            </Button>
                           </div>
-                        )}
+                        </div>
                       </div>
                     </motion.div>
                   )}
@@ -317,7 +421,9 @@ const ProjectDetail = () => {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowAddTask(false)} className="rounded-xl">Batal</Button>
-            <Button onClick={() => { toast.success('Tugas ditambahkan (Mock)'); setShowAddTask(false); }} className="rounded-xl font-semibold" style={{ background: '#0A2540', color: 'white' }}>Tambah Tugas</Button>
+            <Button onClick={handleAddTask} disabled={loadingAction} className="rounded-xl font-semibold" style={{ background: '#0A2540', color: 'white' }}>
+              {loadingAction ? 'Memproses...' : 'Tambah Tugas'}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -331,7 +437,7 @@ const ProjectDetail = () => {
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel className="rounded-xl">Batal</AlertDialogCancel>
-            <AlertDialogAction className="rounded-xl bg-[#E11D48] hover:bg-[#BE123C]" onClick={() => { toast.success('Proyek dihapus (Mock)'); navigate('/projects'); }}>Hapus</AlertDialogAction>
+            <AlertDialogAction className="rounded-xl bg-[#E11D48] hover:bg-[#BE123C]" onClick={handleDeleteProject}>Hapus</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

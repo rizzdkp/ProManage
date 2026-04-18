@@ -1,5 +1,5 @@
-import React, { createContext, useContext, useState, useCallback } from 'react';
-import { mockUsers, getUserByEmail } from '../data/mock';
+import React, { createContext, useContext, useState, useCallback, useEffect } from 'react';
+import { authAPI } from '../lib/api';
 
 const AuthContext = createContext(null);
 
@@ -16,60 +16,57 @@ export const AuthProvider = ({ children }) => {
   });
   const [loading, setLoading] = useState(false);
 
-  const login = useCallback(async (emailOrPhone, password) => {
-    setLoading(true);
-    // Mock login - simulate API call
-    await new Promise(r => setTimeout(r, 800));
-    const found = mockUsers.find(
-      u => u.email === emailOrPhone || u.phone === emailOrPhone
-    );
-    if (found) {
-      setUser(found);
-      localStorage.setItem('promanage_user', JSON.stringify(found));
-      setLoading(false);
-      return { success: true };
+  // Verify token on mount
+  useEffect(() => {
+    const token = localStorage.getItem('promanage_token');
+    if (token && user) {
+      authAPI.me().then(res => {
+        setUser(res.data);
+        localStorage.setItem('promanage_user', JSON.stringify(res.data));
+      }).catch(() => {
+        setUser(null);
+        localStorage.removeItem('promanage_user');
+        localStorage.removeItem('promanage_token');
+      });
     }
-    setLoading(false);
-    return { success: false, error: 'Kredensial tidak valid' };
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const loginWhatsApp = useCallback(async (phone) => {
+  const login = useCallback(async (identifier, password) => {
     setLoading(true);
-    await new Promise(r => setTimeout(r, 800));
-    const found = mockUsers.find(u => u.phone === phone);
-    if (found) {
-      setUser(found);
-      localStorage.setItem('promanage_user', JSON.stringify(found));
+    try {
+      const res = await authAPI.login(identifier, password);
+      const { user: userData, token } = res.data;
+      setUser(userData);
+      localStorage.setItem('promanage_user', JSON.stringify(userData));
+      localStorage.setItem('promanage_token', token);
       setLoading(false);
       return { success: true };
+    } catch (err) {
+      setLoading(false);
+      return { success: false, error: err.response?.data?.detail || 'Gagal masuk' };
     }
-    setLoading(false);
-    return { success: false, error: 'Nomor WhatsApp tidak terdaftar' };
   }, []);
 
   const register = useCallback(async (data) => {
     setLoading(true);
-    await new Promise(r => setTimeout(r, 800));
-    const newUser = {
-      id: `usr-${Date.now()}`,
-      email: data.email || '',
-      name: data.name,
-      role: 'Anggota Tim',
-      phone: data.phone,
-      createdAt: new Date().toISOString(),
-      createdBy: null,
-      deletedAt: null,
-      avatar: null,
-    };
-    setUser(newUser);
-    localStorage.setItem('promanage_user', JSON.stringify(newUser));
-    setLoading(false);
-    return { success: true };
+    try {
+      const res = await authAPI.register(data);
+      const { user: userData, token } = res.data;
+      setUser(userData);
+      localStorage.setItem('promanage_user', JSON.stringify(userData));
+      localStorage.setItem('promanage_token', token);
+      setLoading(false);
+      return { success: true };
+    } catch (err) {
+      setLoading(false);
+      return { success: false, error: err.response?.data?.detail || 'Gagal mendaftar' };
+    }
   }, []);
 
   const logout = useCallback(() => {
     setUser(null);
     localStorage.removeItem('promanage_user');
+    localStorage.removeItem('promanage_token');
   }, []);
 
   const updateProfile = useCallback((updates) => {
@@ -89,7 +86,6 @@ export const AuthProvider = ({ children }) => {
       user,
       loading,
       login,
-      loginWhatsApp,
       register,
       logout,
       updateProfile,

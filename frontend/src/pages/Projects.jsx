@@ -1,14 +1,14 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import {
-  Search, Filter, Plus, Calendar, Users as UsersIcon, ArrowRight, FolderKanban
+  Search, Filter, Plus, Calendar, ArrowRight, FolderKanban
 } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Progress } from '../components/ui/progress';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
-import { mockProjects, getUserById } from '../data/mock';
+import { projectsAPI, usersAPI } from '../lib/api';
 import { useAuth } from '../context/AuthContext';
 
 const Projects = () => {
@@ -16,16 +16,25 @@ const Projects = () => {
   const { canManage } = useAuth();
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
+  const [projects, setProjects] = useState([]);
+  const [allUsers, setAllUsers] = useState([]);
+
+  useEffect(() => {
+    projectsAPI.getAll().then(r => setProjects((r.data || []).filter(p => !p.deletedAt))).catch(() => {});
+    usersAPI.getAll().then(r => setAllUsers(r.data || [])).catch(() => {});
+  }, []);
+
+  const getUserById = (id) => allUsers.find(u => u.id === id);
+  const getInitials = (name) => name ? name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2) : '?';
 
   const filteredProjects = useMemo(() => {
-    return mockProjects.filter(p => {
-      if (p.deletedAt) return false;
+    return projects.filter(p => {
       const matchSearch = p.name.toLowerCase().includes(search.toLowerCase()) ||
-        p.description.toLowerCase().includes(search.toLowerCase());
+        (p.description || '').toLowerCase().includes(search.toLowerCase());
       const matchStatus = statusFilter === 'all' || p.status === statusFilter;
       return matchSearch && matchStatus;
     });
-  }, [search, statusFilter]);
+  }, [projects, search, statusFilter]);
 
   const getStatusColor = (status) => {
     switch (status) {
@@ -49,6 +58,7 @@ const Projects = () => {
         </div>
         {canManage && (
           <Button
+            onClick={() => navigate('/')}
             className="rounded-xl h-10 gap-2 text-sm font-semibold hover:shadow-lg transition-all duration-200"
             style={{ background: '#0A2540', color: 'white' }}
             onMouseEnter={e => e.currentTarget.style.background = '#1E3A5F'}
@@ -137,16 +147,16 @@ const Projects = () => {
                   </div>
                   <div className="flex items-center gap-1">
                     <div className="flex -space-x-1.5">
-                      {project.teamMembers.slice(0, 3).map(mid => {
+                      {(project.teamMembers || []).slice(0, 3).map(mid => {
                         const m = getUserById(mid);
                         return m ? (
                           <div key={mid} className="w-6 h-6 rounded-full border-2 border-white flex items-center justify-center text-[7px] font-bold text-white" style={{ background: '#D4AF77' }}>
-                            {m.name.split(' ').map(n => n[0]).join('').slice(0, 2)}
+                            {getInitials(m.name)}
                           </div>
                         ) : null;
                       })}
                     </div>
-                    {project.teamMembers.length > 3 && (
+                    {(project.teamMembers || []).length > 3 && (
                       <span className="text-[10px] text-[#6B7280] font-medium">+{project.teamMembers.length - 3}</span>
                     )}
                   </div>

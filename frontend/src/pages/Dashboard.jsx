@@ -1,20 +1,19 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { Link, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import {
-  FolderKanban, CheckCircle2, Clock, AlertTriangle, Users, Plus,
-  ArrowRight, TrendingUp, Wifi, WifiOff, UserPlus, BarChart3
+  FolderKanban, CheckCircle2, Clock, Users, Plus,
+  ArrowRight, Wifi, WifiOff, UserPlus
 } from 'lucide-react';
 import { Button } from '../components/ui/button';
-import { Badge } from '../components/ui/badge';
 import { Progress } from '../components/ui/progress';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '../components/ui/dialog';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { Textarea } from '../components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
-import { mockStats, mockProjects, mockUsers, mockWhatsAppStatus, getUserById } from '../data/mock';
+import { statsAPI, projectsAPI, whatsappAPI, usersAPI } from '../lib/api';
 import { toast } from 'sonner';
 
 const fadeIn = { initial: { opacity: 0, y: 16 }, animate: { opacity: 1, y: 0 }, transition: { duration: 0.4 } };
@@ -39,9 +38,23 @@ const Dashboard = () => {
   const [showNewProject, setShowNewProject] = useState(false);
   const [showAddMember, setShowAddMember] = useState(false);
   const [projectForm, setProjectForm] = useState({ name: '', description: '', startDate: '', endDate: '' });
-  const [memberForm, setMemberForm] = useState({ name: '', phone: '', email: '', role: '' });
+  const [memberForm, setMemberForm] = useState({ name: '', phone: '', email: '', role: '', password: '' });
 
-  const recentProjects = mockProjects.filter(p => !p.deletedAt).slice(0, 4);
+  const [stats, setStats] = useState({ totalProjects: 0, completedTasks: 0, inProgressTasks: 0, totalMembers: 0, totalTasks: 0, pendingTasks: 0 });
+  const [projects, setProjects] = useState([]);
+  const [allUsers, setAllUsers] = useState([]);
+  const [waStatus, setWaStatus] = useState({ enabled: false, provider: '', connected: false, lastPing: null });
+  const [loadingCreate, setLoadingCreate] = useState(false);
+
+  const loadData = () => {
+    statsAPI.get().then(r => setStats(r.data)).catch(() => {});
+    projectsAPI.getAll().then(r => setProjects((r.data || []).filter(p => !p.deletedAt).slice(0, 4))).catch(() => {});
+    whatsappAPI.getStatus().then(r => setWaStatus(r.data)).catch(() => {});
+    usersAPI.getAll().then(r => setAllUsers(r.data || [])).catch(() => {});
+  };
+
+  useEffect(() => { loadData(); }, []);
+
   const greeting = () => {
     const h = new Date().getHours();
     if (h < 12) return 'Selamat Pagi';
@@ -58,16 +71,43 @@ const Dashboard = () => {
     }
   };
 
-  const handleCreateProject = () => {
-    toast.success('Proyek berhasil dibuat! (Mock)');
-    setShowNewProject(false);
-    setProjectForm({ name: '', description: '', startDate: '', endDate: '' });
+  const getUserById = (id) => allUsers.find(u => u.id === id);
+  const getInitials = (name) => name ? name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2) : '?';
+
+  const handleCreateProject = async () => {
+    if (!projectForm.name || !projectForm.startDate || !projectForm.endDate) {
+      toast.error('Nama, tanggal mulai, dan tanggal selesai wajib diisi');
+      return;
+    }
+    setLoadingCreate(true);
+    try {
+      await projectsAPI.create(projectForm);
+      toast.success('Proyek berhasil dibuat!');
+      setShowNewProject(false);
+      setProjectForm({ name: '', description: '', startDate: '', endDate: '' });
+      loadData();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Gagal membuat proyek');
+    }
+    setLoadingCreate(false);
   };
 
-  const handleAddMember = () => {
-    toast.success('Anggota berhasil ditambahkan! (Mock)');
-    setShowAddMember(false);
-    setMemberForm({ name: '', phone: '', email: '', role: '' });
+  const handleAddMember = async () => {
+    if (!memberForm.name || !memberForm.phone || !memberForm.role || !memberForm.password) {
+      toast.error('Nama, Nomor WA, Role, dan Password wajib diisi');
+      return;
+    }
+    setLoadingCreate(true);
+    try {
+      await usersAPI.create({ name: memberForm.name, phone: memberForm.phone, email: memberForm.email || undefined, password: memberForm.password });
+      toast.success('Anggota berhasil ditambahkan!');
+      setShowAddMember(false);
+      setMemberForm({ name: '', phone: '', email: '', role: '', password: '' });
+      loadData();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Gagal menambah anggota');
+    }
+    setLoadingCreate(false);
   };
 
   return (
@@ -104,10 +144,10 @@ const Dashboard = () => {
 
       {/* Stats */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <StatCard icon={FolderKanban} label="Total Proyek" value={mockStats.totalProjects} color="#0A2540" bgColor="#EFF6FF" />
-        <StatCard icon={CheckCircle2} label="Tugas Selesai" value={mockStats.completedTasks} color="#0F766E" bgColor="#ECFDF5" />
-        <StatCard icon={Clock} label="Sedang Dikerjakan" value={mockStats.inProgressTasks} color="#D97706" bgColor="#FEF3C7" />
-        <StatCard icon={Users} label="Total Anggota" value={mockStats.totalMembers} color="#7C3AED" bgColor="#F5F3FF" />
+        <StatCard icon={FolderKanban} label="Total Proyek" value={stats.totalProjects} color="#0A2540" bgColor="#EFF6FF" />
+        <StatCard icon={CheckCircle2} label="Tugas Selesai" value={stats.completedTasks} color="#0F766E" bgColor="#ECFDF5" />
+        <StatCard icon={Clock} label="Sedang Dikerjakan" value={stats.inProgressTasks} color="#D97706" bgColor="#FEF3C7" />
+        <StatCard icon={Users} label="Total Anggota" value={stats.totalMembers} color="#7C3AED" bgColor="#F5F3FF" />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -120,7 +160,9 @@ const Dashboard = () => {
             </Link>
           </div>
           <div className="divide-y divide-[#E5E7EB]">
-            {recentProjects.map(project => {
+            {projects.length === 0 ? (
+              <div className="px-6 py-10 text-center text-[#9CA3AF] text-sm">Belum ada proyek</div>
+            ) : projects.map(project => {
               const sc = getStatusColor(project.status);
               return (
                 <div
@@ -143,15 +185,15 @@ const Dashboard = () => {
                     </div>
                     <span className="text-xs font-medium text-[#6B7280]">{project.progress}%</span>
                     <div className="flex -space-x-2">
-                      {project.teamMembers.slice(0, 3).map(mid => {
+                      {(project.teamMembers || []).slice(0, 3).map(mid => {
                         const m = getUserById(mid);
                         return m ? (
                           <div key={mid} className="w-6 h-6 rounded-full border-2 border-white flex items-center justify-center text-[8px] font-bold text-white" style={{ background: '#D4AF77' }}>
-                            {m.name.split(' ').map(n => n[0]).join('').slice(0, 2)}
+                            {getInitials(m.name)}
                           </div>
                         ) : null;
                       })}
-                      {project.teamMembers.length > 3 && (
+                      {(project.teamMembers || []).length > 3 && (
                         <div className="w-6 h-6 rounded-full border-2 border-white flex items-center justify-center text-[8px] font-bold bg-[#F3F4F6] text-[#6B7280]">
                           +{project.teamMembers.length - 3}
                         </div>
@@ -170,7 +212,7 @@ const Dashboard = () => {
           <motion.div {...fadeIn} className="bg-white rounded-2xl border border-[#E5E7EB] p-5">
             <div className="flex items-center justify-between mb-4">
               <h3 className="font-semibold text-[#111827] text-sm">WhatsApp Gateway</h3>
-              {mockWhatsAppStatus.connected ? (
+              {waStatus.connected ? (
                 <span className="flex items-center gap-1.5 text-xs font-medium" style={{ color: '#0F766E' }}>
                   <Wifi size={14} /> Terhubung
                 </span>
@@ -183,17 +225,17 @@ const Dashboard = () => {
             <div className="space-y-3">
               <div className="flex justify-between text-sm">
                 <span className="text-[#6B7280]">Provider</span>
-                <span className="text-[#111827] font-medium capitalize">{mockWhatsAppStatus.provider}</span>
+                <span className="text-[#111827] font-medium capitalize">{waStatus.provider || '-'}</span>
               </div>
               <div className="flex justify-between text-sm">
                 <span className="text-[#6B7280]">Status</span>
-                <span className={`font-medium ${mockWhatsAppStatus.connected ? 'text-[#0F766E]' : 'text-[#E11D48]'}`}>
-                  {mockWhatsAppStatus.connected ? 'Aktif' : 'Tidak Aktif'}
+                <span className={`font-medium ${waStatus.connected ? 'text-[#0F766E]' : 'text-[#E11D48]'}`}>
+                  {waStatus.connected ? 'Aktif' : 'Tidak Aktif'}
                 </span>
               </div>
               <div className="flex justify-between text-sm">
                 <span className="text-[#6B7280]">Terakhir Ping</span>
-                <span className="text-[#111827]">{new Date(mockWhatsAppStatus.lastPing).toLocaleString('id-ID')}</span>
+                <span className="text-[#111827]">{waStatus.lastPing ? new Date(waStatus.lastPing).toLocaleString('id-ID') : '-'}</span>
               </div>
             </div>
           </motion.div>
@@ -203,17 +245,17 @@ const Dashboard = () => {
             <h3 className="font-semibold text-[#111827] text-sm mb-4">Ringkasan Tugas</h3>
             <div className="space-y-3">
               {[
-                { label: 'Selesai', value: mockStats.completedTasks, total: mockStats.totalTasks, color: '#0F766E' },
-                { label: 'Dikerjakan', value: mockStats.inProgressTasks, total: mockStats.totalTasks, color: '#D97706' },
-                { label: 'Belum Mulai', value: mockStats.pendingTasks, total: mockStats.totalTasks, color: '#6B7280' },
+                { label: 'Selesai', value: stats.completedTasks, total: stats.totalTasks, color: '#0F766E' },
+                { label: 'Dikerjakan', value: stats.inProgressTasks, total: stats.totalTasks, color: '#D97706' },
+                { label: 'Belum Mulai', value: stats.pendingTasks, total: stats.totalTasks, color: '#6B7280' },
               ].map(item => (
                 <div key={item.label}>
                   <div className="flex justify-between text-sm mb-1">
                     <span className="text-[#6B7280]">{item.label}</span>
-                    <span className="font-medium" style={{ color: item.color }}>{item.value}/{item.total}</span>
+                    <span className="font-medium" style={{ color: item.color }}>{item.value}/{item.total || 0}</span>
                   </div>
                   <div className="w-full h-2 rounded-full bg-[#F3F4F6]">
-                    <div className="h-2 rounded-full transition-all duration-500" style={{ width: `${(item.value / item.total) * 100}%`, background: item.color }} />
+                    <div className="h-2 rounded-full transition-all duration-500" style={{ width: `${item.total ? (item.value / item.total) * 100 : 0}%`, background: item.color }} />
                   </div>
                 </div>
               ))}
@@ -250,7 +292,9 @@ const Dashboard = () => {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowNewProject(false)} className="rounded-xl">Batal</Button>
-            <Button onClick={handleCreateProject} className="rounded-xl font-semibold" style={{ background: '#0A2540', color: 'white' }}>Buat Proyek</Button>
+            <Button onClick={handleCreateProject} disabled={loadingCreate} className="rounded-xl font-semibold" style={{ background: '#0A2540', color: 'white' }}>
+              {loadingCreate ? 'Memproses...' : 'Buat Proyek'}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -285,10 +329,16 @@ const Dashboard = () => {
                 </SelectContent>
               </Select>
             </div>
+            <div className="space-y-2">
+              <Label className="text-sm font-medium">Password</Label>
+              <Input type="password" placeholder="Password akun baru" value={memberForm.password} onChange={e => setMemberForm(p => ({ ...p, password: e.target.value }))} className="h-11 rounded-xl" />
+            </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowAddMember(false)} className="rounded-xl">Batal</Button>
-            <Button onClick={handleAddMember} className="rounded-xl font-semibold" style={{ background: '#0A2540', color: 'white' }}>Tambah Anggota</Button>
+            <Button onClick={handleAddMember} disabled={loadingCreate} className="rounded-xl font-semibold" style={{ background: '#0A2540', color: 'white' }}>
+              {loadingCreate ? 'Memproses...' : 'Tambah Anggota'}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

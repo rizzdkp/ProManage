@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -13,9 +13,8 @@ import {
   Bell,
   ChevronDown,
 } from 'lucide-react';
-import { mockNotifications } from '../data/mock';
+import { notificationsAPI } from '../lib/api';
 import { Button } from './ui/button';
-import { Badge } from './ui/badge';
 import { ScrollArea } from './ui/scroll-area';
 import {
   DropdownMenu,
@@ -35,7 +34,13 @@ const AppShell = () => {
   const { user, logout, canManage } = useAuth();
   const navigate = useNavigate();
   const [mobileOpen, setMobileOpen] = useState(false);
-  const unreadCount = mockNotifications.filter(n => !n.isRead && n.targetEmail === user?.email).length;
+  const [notifications, setNotifications] = useState([]);
+
+  useEffect(() => {
+    notificationsAPI.getAll().then(res => setNotifications(res.data || [])).catch(() => {});
+  }, []);
+
+  const unreadCount = notifications.filter(n => !n.isRead).length;
 
   const handleLogout = () => {
     logout();
@@ -186,14 +191,20 @@ const AppShell = () => {
                   <div className="px-4 py-3 border-b">
                     <p className="text-sm font-semibold text-[#111827]">Notifikasi</p>
                   </div>
-                  {mockNotifications.filter(n => n.targetEmail === user?.email).slice(0, 5).map(n => (
-                    <DropdownMenuItem key={n.id} className="px-4 py-3 cursor-pointer">
-                      <div className="flex items-start gap-2">
-                        {!n.isRead && <span className="w-2 h-2 rounded-full mt-1.5 flex-shrink-0" style={{ background: '#0A2540' }} />}
-                        <p className={`text-sm ${n.isRead ? 'text-[#6B7280]' : 'text-[#111827] font-medium'}`}>{n.message}</p>
-                      </div>
-                    </DropdownMenuItem>
-                  ))}
+                  {notifications.length === 0 ? (
+                    <div className="px-4 py-6 text-center text-sm text-[#9CA3AF]">Belum ada notifikasi</div>
+                  ) : (
+                    notifications.slice(0, 5).map(n => (
+                      <DropdownMenuItem key={n.id} className="px-4 py-3 cursor-pointer" onClick={() => {
+                        if (!n.isRead) notificationsAPI.markRead(n.id).catch(() => {});
+                      }}>
+                        <div className="flex items-start gap-2">
+                          {!n.isRead && <span className="w-2 h-2 rounded-full mt-1.5 flex-shrink-0" style={{ background: '#0A2540' }} />}
+                          <p className={`text-sm ${n.isRead ? 'text-[#6B7280]' : 'text-[#111827] font-medium'}`}>{n.message}</p>
+                        </div>
+                      </DropdownMenuItem>
+                    ))
+                  )}
                 </DropdownMenuContent>
               </DropdownMenu>
 

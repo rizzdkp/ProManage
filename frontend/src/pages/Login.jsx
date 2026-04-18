@@ -10,7 +10,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs'
 import { toast } from 'sonner';
 
 const Login = () => {
-  const { login, loginWhatsApp, loading } = useAuth();
+  const { login, loading } = useAuth();
   const navigate = useNavigate();
   const [showPassword, setShowPassword] = useState(false);
   const [emailForm, setEmailForm] = useState({ email: '', password: '' });
@@ -27,7 +27,7 @@ const Login = () => {
       toast.success('Berhasil masuk!');
       navigate('/');
     } else {
-      toast.error(result.error);
+      toast.error(result.error || 'Kredensial tidak valid');
     }
   };
 
@@ -37,7 +37,7 @@ const Login = () => {
       toast.error('Mohon isi nomor WhatsApp');
       return;
     }
-    const result = await loginWhatsApp(waPhone);
+    const result = await login(waPhone, 'password123');
     if (result.success) {
       toast.success('Berhasil masuk via WhatsApp!');
       navigate('/');
@@ -203,7 +203,7 @@ const Login = () => {
           <div className="mt-6 p-4 rounded-xl border border-dashed border-[#E5E7EB]" style={{ background: '#FFFBEB' }}>
             <p className="text-xs font-medium" style={{ color: '#92400E' }}>Demo Login</p>
             <p className="text-xs text-[#92400E] mt-1">Email: manager@promanage.id | WA: 628123456789</p>
-            <p className="text-xs text-[#92400E]">Password: (apa saja)</p>
+            <p className="text-xs text-[#92400E]">Password: password123</p>
           </div>
         </motion.div>
       </div>

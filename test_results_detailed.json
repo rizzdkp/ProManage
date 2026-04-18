@@ -1,0 +1,238 @@
+{
+  "auth": {
+    "login": {
+      "success": true,
+      "timestamp": "2026-04-18T11:16:36.254917",
+      "response_data": {
+        "user": {
+          "id": "usr-f3150983",
+          "email": "manager@promanage.id",
+          "name": "Budi Santoso",
+          "role": "Manager",
+          "phone": "628123456789",
+          "createdAt": "2026-04-18T11:08:48.524898Z",
+          "createdBy": null,
+          "deletedAt": null,
+          "avatar": null
+        },
+        "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1c3ItZjMxNTA5ODMiLCJlbWFpbCI6Im1hbmFnZXJAcHJvbWFuYWdlLmlkIiwicm9sZSI6Ik1hbmFnZXIiLCJleHAiOjE3NzY3NzAxOTZ9.-lc55sjRTKUto_eScapD74nbBrzwT3ZDRkBiYCjFIeA"
+      },
+      "error": null
+    },
+    "me": {
+      "success": true,
+      "timestamp": "2026-04-18T11:16:36.303876",
+      "response_data": {
+        "id": "usr-f3150983",
+        "email": "manager@promanage.id",
+        "name": "Budi Santoso",
+        "role": "Manager",
+        "phone": "628123456789",
+        "createdAt": "2026-04-18T11:08:48.524898Z",
+        "createdBy": null,
+        "deletedAt": null,
+        "avatar": null
+      },
+      "error": null
+    },
+    "register": {
+      "success": true,
+      "timestamp": "2026-04-18T11:16:36.573516",
+      "response_data": {
+        "user": {
+          "id": "usr-5597d979",
+          "email": "tester298ab9@test.id",
+          "name": "Tester Baru",
+          "role": "Anggota Tim",
+          "phone": "6281ad97a019",
+          "createdAt": "2026-04-18T11:16:36.554060Z",
+          "createdBy": null,
+          "deletedAt": null,
+          "avatar": null
+        },
+        "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1c3ItNTU5N2Q5NzkiLCJlbWFpbCI6InRlc3RlcjI5OGFiOUB0ZXN0LmlkIiwicm9sZSI6IkFuZ2dvdGEgVGltIiwiZXhwIjoxNzc2NzcwMTk2fQ.j-TKrsbNuD5iBetW6jrm-x6CtQkMJLukEYQ0tXgN_JA"
+      },
+      "error": null
+    }
+  },
+  "users": {
+    "get_all": {
+      "success": true,
+      "timestamp": "2026-04-18T11:16:36.623231",
+      "response_data": "Found 7 users",
+      "error": null
+    }
+  },
+  "projects": {
+    "get_all": {
+      "success": true,
+      "timestamp": "2026-04-18T11:16:36.668727",
+      "response_data": "Found 5 projects",
+      "error": null
+    },
+    "get_by_id": {
+      "success": true,
+      "timestamp": "2026-04-18T11:16:36.714820",
+      "response_data": {
+        "id": "prj-25e65f11",
+        "name": "Website Redesign PT Maju",
+        "description": "Redesign website korporat untuk PT Maju Bersama dengan tampilan modern dan responsif.",
+        "startDate": "2025-01-15",
+        "endDate": "2025-06-30",
+        "status": "Aktif",
+        "teamMembers": [
+          "usr-f3150983",
+          "usr-8e118bff",
+          "usr-8f6c3b3d",
+          "usr-56810cc2"
+        ],
+        "createdBy": "usr-f3150983",
+        "progress": 40,
+        "deletedAt": null
+      },
+      "error": null
+    },
+    "create": {
+      "success": true,
+      "timestamp": "2026-04-18T11:16:36.758365",
+      "response_data": {
+        "id": "prj-83eaf8cd",
+        "name": "Proyek Testing API",
+        "description": "Proyek untuk testing API backend ProManage",
+        "startDate": "2025-01-20",
+        "endDate": "2025-06-30",
+        "status": "Aktif",
+        "teamMembers": [
+          "usr-f3150983"
+        ],
+        "createdBy": "usr-f3150983",
+        "progress": 0,
+        "deletedAt": null
+      },
+      "error": null
+    }
+  },
+  "tasks": {
+    "get_by_project": {
+      "success": true,
+      "timestamp": "2026-04-18T11:16:36.803115",
+      "response_data": "Found 0 tasks for project",
+      "error": null
+    },
+    "create": {
+      "success": true,
+      "timestamp": "2026-04-18T11:16:36.847317",
+      "response_data": {
+        "id": "tsk-fbe0144a",
+        "projectId": "prj-83eaf8cd",
+        "name": "Task Testing API",
+        "description": "Task untuk testing API backend",
+        "dueDate": "2025-03-15",
+        "priority": "Tinggi",
+        "status": "Belum Mulai",
+        "assignee": null
+      },
+      "error": null
+    },
+    "update_status_to_selesai": {
+      "success": false,
+      "timestamp": "2026-04-18T11:16:37.077367",
+      "response_data": null,
+      "error": "Status: None, No response"
+    }
+  },
+  "subtasks": {
+    "get_by_task": {
+      "success": true,
+      "timestamp": "2026-04-18T11:16:36.893540",
+      "response_data": "Found 0 subtasks",
+      "error": null
+    },
+    "create": {
+      "success": true,
+      "timestamp": "2026-04-18T11:16:36.937147",
+      "response_data": {
+        "id": "sub-b86b3423",
+        "taskId": "tsk-fbe0144a",
+        "title": "Subtask Testing API",
+        "isDone": false,
+        "projectId": "prj-83eaf8cd"
+      },
+      "error": null
+    },
+    "toggle_done": {
+      "success": true,
+      "timestamp": "2026-04-18T11:16:36.983521",
+      "response_data": {
+        "id": "sub-b86b3423",
+        "taskId": "tsk-fbe0144a",
+        "title": "Subtask Testing API",
+        "isDone": true,
+        "projectId": "prj-83eaf8cd"
+      },
+      "error": null
+    }
+  },
+  "comments": {
+    "get_by_task": {
+      "success": true,
+      "timestamp": "2026-04-18T11:16:37.122890",
+      "response_data": "Found 0 comments",
+      "error": null
+    },
+    "create": {
+      "success": true,
+      "timestamp": "2026-04-18T11:16:37.169470",
+      "response_data": {
+        "id": "cmt-ab339e90",
+        "taskId": "tsk-fbe0144a",
+        "actor": "Budi Santoso",
+        "message": "Ini adalah komentar testing dari API test script",
+        "timestamp": "2026-04-18T11:16:37.152697Z"
+      },
+      "error": null
+    }
+  },
+  "notifications": {
+    "get_all": {
+      "success": true,
+      "timestamp": "2026-04-18T11:16:37.213539",
+      "response_data": "Found 0 notifications",
+      "error": null
+    }
+  },
+  "stats": {
+    "get_all": {
+      "success": true,
+      "timestamp": "2026-04-18T11:16:37.258754",
+      "response_data": {
+        "totalProjects": 6,
+        "activeProjects": 4,
+        "completedProjects": 1,
+        "pendingProjects": 1,
+        "totalTasks": 11,
+        "completedTasks": 4,
+        "inProgressTasks": 3,
+        "pendingTasks": 4,
+        "totalMembers": 7,
+        "overdueCount": 7
+      },
+      "error": null
+    }
+  },
+  "whatsapp": {
+    "status": {
+      "success": true,
+      "timestamp": "2026-04-18T11:16:37.304068",
+      "response_data": {
+        "enabled": false,
+        "provider": "webhook",
+        "connected": false,
+        "lastPing": null,
+        "gatewayUrl": ""
+      },
+      "error": null
+    }
+  },
+  "business_rules": {}
+}

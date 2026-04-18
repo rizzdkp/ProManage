@@ -198,13 +198,6 @@ const Login = () => {
             Belum punya akun?{' '}
             <Link to="/register" className="font-semibold hover:underline" style={{ color: '#0A2540' }}>Daftar Sekarang</Link>
           </p>
-
-          {/* Demo credentials hint */}
-          <div className="mt-6 p-4 rounded-xl border border-dashed border-[#E5E7EB]" style={{ background: '#FFFBEB' }}>
-            <p className="text-xs font-medium" style={{ color: '#92400E' }}>Demo Login</p>
-            <p className="text-xs text-[#92400E] mt-1">Email: manager@promanage.id | WA: 628123456789</p>
-            <p className="text-xs text-[#92400E]">Password: password123</p>
-          </div>
         </motion.div>
       </div>
     </div>

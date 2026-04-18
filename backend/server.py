@@ -10,6 +10,7 @@ from datetime import datetime
 
 from models import (
     RegisterInput, LoginInput, AuthResponse, UserInDB, UserOut, UserUpdate, PasswordChange,
+    CreateUserInput,
     ProjectCreate, ProjectUpdate, ProjectInDB,
     TaskCreate, TaskUpdate, TaskInDB,
     SubtaskCreate, SubtaskUpdate, SubtaskInDB,
@@ -63,10 +64,14 @@ async def register(data: RegisterInput):
     existing = await db.users.find_one({"$or": [{"phone": data.phone}, {"email": data.email}]})
     if existing:
         raise HTTPException(status_code=400, detail="Nomor WA atau email sudah terdaftar")
+    # First user in the system becomes Manager
+    users_count = await db.users.count_documents({})
+    role = "Manager" if users_count == 0 else "Anggota Tim"
     user = UserInDB(
         name=data.name,
         phone=data.phone,
         email=data.email or "",
+        role=role,
         password_hash=hash_password(data.password),
     )
     await db.users.insert_one(user.dict())
@@ -102,16 +107,19 @@ async def get_users(current=Depends(get_current_user)):
 
 
 @api_router.post("/users")
-async def create_user(data: RegisterInput, current=Depends(get_current_user)):
+async def create_user(data: CreateUserInput, current=Depends(get_current_user)):
     if current["role"] not in ("Manager", "Admin"):
         raise HTTPException(status_code=403, detail="Tidak memiliki izin")
     existing = await db.users.find_one({"$or": [{"phone": data.phone}, {"email": data.email}]})
     if existing:
         raise HTTPException(status_code=400, detail="Nomor WA atau email sudah terdaftar")
+    valid_roles = ["Admin", "Team Lead", "Anggota Tim"]
+    role = data.role if data.role in valid_roles else "Anggota Tim"
     user = UserInDB(
         name=data.name,
         phone=data.phone,
         email=data.email or "",
+        role=role,
         password_hash=hash_password(data.password),
         createdBy=current["sub"],
     )
@@ -439,132 +447,6 @@ async def get_stats(current=Depends(get_current_user)):
         "totalMembers": len(users),
         "overdueCount": overdue,
     }
-
-
-# ===== SEED DATA =====
-@api_router.post("/seed")
-async def seed_data():
-    """Seed initial data for testing"""
-    users_count = await db.users.count_documents({})
-    if users_count > 0:
-        return {"message": "Data sudah ada"}
-
-    # Create seed users
-    seed_users = [
-        {"name": "Budi Santoso", "phone": "628123456789", "email": "manager@promanage.id", "role": "Manager"},
-        {"name": "Siti Nurhaliza", "phone": "628234567890", "email": "admin@promanage.id", "role": "Admin"},
-        {"name": "Andi Pratama", "phone": "628345678901", "email": "lead@promanage.id", "role": "Team Lead"},
-        {"name": "Dewi Lestari", "phone": "628456789012", "email": "member1@promanage.id", "role": "Anggota Tim"},
-        {"name": "Rizki Ramadhan", "phone": "628567890123", "email": "member2@promanage.id", "role": "Anggota Tim"},
-        {"name": "Fajar Nugroho", "phone": "628678901234", "email": "lead2@promanage.id", "role": "Team Lead"},
-    ]
-    user_ids = []
-    for i, su in enumerate(seed_users):
-        user = UserInDB(
-            name=su["name"],
-            phone=su["phone"],
-            email=su["email"],
-            role=su["role"],
-            password_hash=hash_password("password123"),
-            createdBy=None if i == 0 else user_ids[0],
-        )
-        user_ids.append(user.id)
-        await db.users.insert_one(user.dict())
-
-    # Create seed projects
-    seed_projects = [
-        {"name": "Website Redesign PT Maju", "desc": "Redesign website korporat untuk PT Maju Bersama dengan tampilan modern dan responsif.", "start": "2025-01-15", "end": "2025-06-30", "status": "Aktif", "members": [0, 2, 3, 4]},
-        {"name": "Aplikasi Mobile E-Commerce", "desc": "Pengembangan aplikasi mobile e-commerce untuk toko retail modern.", "start": "2025-02-01", "end": "2025-08-31", "status": "Aktif", "members": [0, 1, 5, 4]},
-        {"name": "Sistem Inventory Gudang", "desc": "Pembangunan sistem manajemen inventory untuk gudang distribusi.", "start": "2025-03-01", "end": "2025-07-15", "status": "Aktif", "members": [1, 2, 3]},
-        {"name": "Portal HR Internal", "desc": "Platform HR internal untuk manajemen karyawan dan cuti.", "start": "2024-10-01", "end": "2025-03-31", "status": "Selesai", "members": [0, 2, 4]},
-        {"name": "Dashboard Analitik Penjualan", "desc": "Dashboard analitik real-time untuk monitoring penjualan harian.", "start": "2025-05-01", "end": "2025-09-30", "status": "Tertunda", "members": [5, 3]},
-    ]
-    project_ids = []
-    for sp in seed_projects:
-        proj = ProjectInDB(
-            name=sp["name"],
-            description=sp["desc"],
-            startDate=sp["start"],
-            endDate=sp["end"],
-            status=sp["status"],
-            teamMembers=[user_ids[i] for i in sp["members"]],
-            createdBy=user_ids[0],
-        )
-        project_ids.append(proj.id)
-        await db.projects.insert_one(proj.dict())
-
-    # Create seed tasks
-    seed_tasks = [
-        {"proj": 0, "name": "Riset UI/UX Kompetitor", "desc": "Melakukan analisis mendalam terhadap 5 website kompetitor utama.", "due": "2025-02-15", "pri": "Tinggi", "status": "Selesai", "assignee": 3},
-        {"proj": 0, "name": "Desain Wireframe Halaman Utama", "desc": "Membuat wireframe untuk halaman utama website baru.", "due": "2025-03-01", "pri": "Tinggi", "status": "Selesai", "assignee": 2},
-        {"proj": 0, "name": "Implementasi Frontend", "desc": "Mengembangkan frontend berdasarkan desain yang sudah disetujui.", "due": "2025-05-15", "pri": "Tinggi", "status": "Dikerjakan", "assignee": 4},
-        {"proj": 0, "name": "Integrasi API Backend", "desc": "Menghubungkan frontend dengan API backend.", "due": "2025-06-01", "pri": "Sedang", "status": "Belum Mulai", "assignee": 3},
-        {"proj": 0, "name": "Testing & QA", "desc": "Pengujian menyeluruh terhadap fitur dan performa website.", "due": "2025-06-20", "pri": "Sedang", "status": "Belum Mulai", "assignee": 2},
-        {"proj": 1, "name": "Setup Environment React Native", "desc": "Konfigurasi environment development React Native.", "due": "2025-02-15", "pri": "Tinggi", "status": "Selesai", "assignee": 5},
-        {"proj": 1, "name": "Desain UI Katalog Produk", "desc": "Membuat desain halaman katalog produk.", "due": "2025-03-15", "pri": "Tinggi", "status": "Dikerjakan", "assignee": 4},
-        {"proj": 1, "name": "Implementasi Keranjang Belanja", "desc": "Fitur keranjang belanja dan checkout.", "due": "2025-05-01", "pri": "Tinggi", "status": "Belum Mulai", "assignee": 5},
-        {"proj": 2, "name": "Desain Database Schema", "desc": "Merancang schema database untuk sistem inventory.", "due": "2025-03-20", "pri": "Tinggi", "status": "Selesai", "assignee": 2},
-        {"proj": 2, "name": "CRUD Produk Inventory", "desc": "Implementasi fitur CRUD untuk data produk.", "due": "2025-04-30", "pri": "Sedang", "status": "Dikerjakan", "assignee": 3},
-    ]
-    task_ids = []
-    for st in seed_tasks:
-        task = TaskInDB(
-            projectId=project_ids[st["proj"]],
-            name=st["name"],
-            description=st["desc"],
-            dueDate=st["due"],
-            priority=st["pri"],
-            status=st["status"],
-            assignee=user_ids[st["assignee"]],
-        )
-        task_ids.append(task.id)
-        await db.tasks.insert_one(task.dict())
-
-    # Create seed subtasks
-    seed_subtasks = [
-        {"task": 0, "title": "Identifikasi 5 kompetitor utama", "done": True, "proj": 0},
-        {"task": 0, "title": "Screenshot dan analisis UI masing-masing", "done": True, "proj": 0},
-        {"task": 0, "title": "Buat laporan perbandingan", "done": True, "proj": 0},
-        {"task": 1, "title": "Wireframe halaman beranda", "done": True, "proj": 0},
-        {"task": 1, "title": "Wireframe halaman tentang kami", "done": True, "proj": 0},
-        {"task": 1, "title": "Wireframe halaman kontak", "done": True, "proj": 0},
-        {"task": 2, "title": "Setup project React", "done": True, "proj": 0},
-        {"task": 2, "title": "Implementasi komponen header", "done": True, "proj": 0},
-        {"task": 2, "title": "Implementasi halaman beranda", "done": False, "proj": 0},
-        {"task": 2, "title": "Implementasi responsive design", "done": False, "proj": 0},
-        {"task": 6, "title": "Mockup grid produk", "done": True, "proj": 1},
-        {"task": 6, "title": "Mockup detail produk", "done": False, "proj": 1},
-        {"task": 9, "title": "API endpoint produk", "done": True, "proj": 2},
-        {"task": 9, "title": "Form input produk", "done": False, "proj": 2},
-    ]
-    for ss in seed_subtasks:
-        sub = SubtaskInDB(
-            taskId=task_ids[ss["task"]],
-            title=ss["title"],
-            isDone=ss["done"],
-            projectId=project_ids[ss["proj"]],
-        )
-        await db.subtasks.insert_one(sub.dict())
-
-    # Create seed comments
-    seed_comments = [
-        {"task": 0, "actor": "Budi Santoso", "msg": "Pastikan analisis mencakup aspek mobile juga.", "ts": "2025-02-01T10:30:00Z"},
-        {"task": 0, "actor": "Dewi Lestari", "msg": "Sudah saya tambahkan analisis mobile di laporan.", "ts": "2025-02-02T14:15:00Z"},
-        {"task": 2, "actor": "Andi Pratama", "msg": "Gunakan Tailwind CSS untuk styling.", "ts": "2025-04-10T09:00:00Z"},
-        {"task": 2, "actor": "Rizki Ramadhan", "msg": "Noted, sudah saya setup.", "ts": "2025-04-10T11:30:00Z"},
-        {"task": 6, "actor": "Fajar Nugroho", "msg": "Referensi desain ada di Figma link yang saya share.", "ts": "2025-03-10T08:00:00Z"},
-        {"task": 8, "actor": "Siti Nurhaliza", "msg": "Schema sudah di-review dan approved.", "ts": "2025-03-18T16:00:00Z"},
-    ]
-    for sc in seed_comments:
-        cmt = CommentInDB(
-            taskId=task_ids[sc["task"]],
-            actor=sc["actor"],
-            message=sc["msg"],
-            timestamp=sc["ts"],
-        )
-        await db.comments.insert_one(cmt.dict())
-
-    return {"message": "Data seed berhasil dibuat", "users": len(seed_users), "projects": len(seed_projects), "tasks": len(seed_tasks)}
 
 
 # ===== ROOT =====

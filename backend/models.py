@@ -58,6 +58,14 @@ class UserUpdate(BaseModel):
     phone: Optional[str] = None
 
 
+class CreateUserInput(BaseModel):
+    name: str
+    phone: str
+    password: str
+    email: Optional[str] = None
+    role: str = "Anggota Tim"
+
+
 class PasswordChange(BaseModel):
     currentPassword: str
     newPassword: str

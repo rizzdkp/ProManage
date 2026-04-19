@@ -175,3 +175,8 @@ class NotificationInDB(BaseModel):
     targetEmail: Optional[str] = None
     isRead: bool = False
     timestamp: str = Field(default_factory=lambda: datetime.utcnow().isoformat() + "Z")
+
+
+class WhatsAppTestInput(BaseModel):
+    phone: Optional[str] = None
+    message: Optional[str] = None

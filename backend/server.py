@@ -2,10 +2,13 @@ from fastapi import FastAPI, APIRouter, HTTPException, Depends, Query
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
+import asyncio
+import base64
 import os
 import logging
+import httpx
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 from datetime import datetime, timezone
 
 from models import (
@@ -15,6 +18,7 @@ from models import (
     SubtaskCreate, SubtaskUpdate, SubtaskInDB,
     CommentCreate, CommentInDB,
     NotificationInDB,
+    WhatsAppTestInput,
 )
 from auth import hash_password, verify_password, create_token, get_current_user
 
@@ -62,6 +66,302 @@ def normalize_email(value: Optional[str]) -> str:
 
 def normalize_phone(value: str) -> str:
     return (value or "").strip()
+
+
+def normalize_whatsapp_phone(value: Optional[str]) -> str:
+    digits = "".join(ch for ch in (value or "") if ch.isdigit())
+    if not digits:
+        return ""
+    if digits.startswith("0"):
+        return f"62{digits[1:]}"
+    if digits.startswith("8"):
+        return f"62{digits}"
+    return digits
+
+
+def parse_float_env(name: str, default: float) -> float:
+    raw = (os.environ.get(name, "") or "").strip()
+    if not raw:
+        return default
+    try:
+        parsed = float(raw)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed > 0 else default
+
+
+def is_admin_or_manager(current: dict) -> bool:
+    return current.get("role") in ("Manager", "Admin")
+
+
+def get_whatsapp_config() -> Dict[str, Any]:
+    enabled = os.environ.get("WHATSAPP_ENABLED", "false").lower() == "true"
+    provider = (os.environ.get("WHATSAPP_PROVIDER", "webhook") or "webhook").strip().lower()
+    webhook_url = (os.environ.get("WHATSAPP_WEBHOOK_URL", "") or "").strip()
+    webhook_token = (os.environ.get("WHATSAPP_WEBHOOK_TOKEN", "") or "").strip()
+    auth_header = (os.environ.get("WHATSAPP_WEBHOOK_AUTH_HEADER", "Authorization") or "Authorization").strip()
+    waha_base_url = (os.environ.get("WHATSAPP_WAHA_BASE_URL", "http://127.0.0.1:3000") or "").strip()
+    waha_api_key = (os.environ.get("WHATSAPP_WAHA_API_KEY", "") or "").strip()
+    waha_session = (os.environ.get("WHATSAPP_WAHA_SESSION", "default") or "default").strip() or "default"
+    timeout_seconds = parse_float_env("WHATSAPP_TIMEOUT_SECONDS", 10.0)
+
+    configured = False
+    if provider == "webhook":
+        configured = bool(webhook_url)
+    elif provider == "waha":
+        configured = bool(waha_base_url)
+
+    return {
+        "enabled": enabled,
+        "provider": provider,
+        "webhook_url": webhook_url,
+        "webhook_token": webhook_token,
+        "auth_header": auth_header,
+        "waha_base_url": waha_base_url,
+        "waha_api_key": waha_api_key,
+        "waha_session": waha_session,
+        "timeout_seconds": timeout_seconds,
+        "configured": configured,
+    }
+
+
+def build_waha_url(wa_cfg: Dict[str, Any], path: str) -> str:
+    base = wa_cfg["waha_base_url"].rstrip("/")
+    if not path.startswith("/"):
+        path = f"/{path}"
+    return f"{base}{path}"
+
+
+def build_waha_headers(wa_cfg: Dict[str, Any]) -> Dict[str, str]:
+    headers: Dict[str, str] = {"Content-Type": "application/json"}
+    if wa_cfg.get("waha_api_key"):
+        headers["X-Api-Key"] = wa_cfg["waha_api_key"]
+    return headers
+
+
+async def waha_request(
+    wa_cfg: Dict[str, Any],
+    method: str,
+    path: str,
+    json_payload: Optional[dict] = None,
+    params: Optional[dict] = None,
+) -> httpx.Response:
+    url = build_waha_url(wa_cfg, path)
+    async with httpx.AsyncClient(timeout=wa_cfg["timeout_seconds"]) as client:
+        return await client.request(
+            method=method,
+            url=url,
+            headers=build_waha_headers(wa_cfg),
+            json=json_payload,
+            params=params,
+        )
+
+
+def map_waha_status(info: Optional[dict]) -> Dict[str, Any]:
+    session_state = (info or {}).get("status")
+    normalized_state = (session_state or "").upper()
+    connected = normalized_state == "WORKING"
+    needs_qr_scan = normalized_state == "SCAN_QR_CODE"
+    return {
+        "sessionState": normalized_state or None,
+        "connected": connected,
+        "needsQrScan": needs_qr_scan,
+    }
+
+
+async def get_waha_session_info(wa_cfg: Dict[str, Any]) -> Optional[dict]:
+    response = await waha_request(wa_cfg, "GET", f"/api/sessions/{wa_cfg['waha_session']}")
+    if response.status_code == 404:
+        return None
+    response.raise_for_status()
+    return response.json()
+
+
+async def ensure_waha_session(wa_cfg: Dict[str, Any]) -> Optional[dict]:
+    info = await get_waha_session_info(wa_cfg)
+    if info:
+        state = (info.get("status") or "").upper()
+        if state == "STOPPED":
+            start_response = await waha_request(wa_cfg, "POST", f"/api/sessions/{wa_cfg['waha_session']}/start")
+            if start_response.status_code not in (200, 201, 204):
+                start_response.raise_for_status()
+            info = await get_waha_session_info(wa_cfg)
+        return info
+
+    create_payload = {"name": wa_cfg["waha_session"], "start": True}
+    create_response = await waha_request(wa_cfg, "POST", "/api/sessions", json_payload=create_payload)
+    if create_response.status_code not in (200, 201, 409):
+        create_response.raise_for_status()
+
+    if create_response.status_code == 409:
+        start_response = await waha_request(wa_cfg, "POST", f"/api/sessions/{wa_cfg['waha_session']}/start")
+        if start_response.status_code not in (200, 201, 204):
+            start_response.raise_for_status()
+
+    return await get_waha_session_info(wa_cfg)
+
+
+async def get_waha_qr_data(wa_cfg: Dict[str, Any]) -> Dict[str, Any]:
+    response = await waha_request(
+        wa_cfg,
+        "GET",
+        f"/api/{wa_cfg['waha_session']}/auth/qr",
+        params={"format": "image"},
+    )
+    response.raise_for_status()
+
+    content_type = (response.headers.get("content-type") or "").lower()
+    if "application/json" in content_type:
+        payload = response.json()
+        if isinstance(payload, dict) and payload.get("mimetype") and payload.get("data"):
+            return {
+                "mimetype": payload["mimetype"],
+                "data": payload["data"],
+                "imageDataUrl": f"data:{payload['mimetype']};base64,{payload['data']}",
+                "raw": None,
+            }
+        if isinstance(payload, dict) and payload.get("value"):
+            return {
+                "mimetype": None,
+                "data": None,
+                "imageDataUrl": None,
+                "raw": payload["value"],
+            }
+        raise RuntimeError("Format respons QR WAHA tidak dikenali")
+
+    mimetype = content_type.split(";")[0] or "image/png"
+    encoded = base64.b64encode(response.content).decode("ascii")
+    return {
+        "mimetype": mimetype,
+        "data": encoded,
+        "imageDataUrl": f"data:{mimetype};base64,{encoded}",
+        "raw": None,
+    }
+
+
+async def get_whatsapp_runtime_status() -> Dict[str, Any]:
+    wa_cfg = get_whatsapp_config()
+    base_response = {
+        "enabled": wa_cfg["enabled"],
+        "provider": wa_cfg["provider"],
+        "configured": wa_cfg["configured"],
+        "connected": False,
+        "lastPing": None,
+        "gatewayUrl": "",
+        "session": None,
+        "sessionState": None,
+        "needsQrScan": False,
+    }
+
+    if wa_cfg["provider"] == "webhook":
+        is_connected = wa_cfg["enabled"] and wa_cfg["configured"]
+        base_response.update({
+            "connected": is_connected,
+            "lastPing": datetime.utcnow().isoformat() + "Z" if is_connected else None,
+            "gatewayUrl": wa_cfg["webhook_url"],
+        })
+        return base_response
+
+    if wa_cfg["provider"] == "waha":
+        base_response.update({
+            "gatewayUrl": wa_cfg["waha_base_url"],
+            "session": wa_cfg["waha_session"],
+        })
+
+        if not wa_cfg["enabled"] or not wa_cfg["configured"]:
+            return base_response
+
+        try:
+            info = await get_waha_session_info(wa_cfg)
+            status_data = map_waha_status(info)
+            base_response.update(status_data)
+            base_response["lastPing"] = datetime.utcnow().isoformat() + "Z"
+        except Exception as exc:
+            logger.warning("WAHA status check gagal: %s", exc)
+        return base_response
+
+    return base_response
+
+
+async def send_whatsapp_message(
+    target_user: dict,
+    message: str,
+    notif_type: str,
+    task_id: Optional[str] = None,
+) -> bool:
+    wa_cfg = get_whatsapp_config()
+    if not wa_cfg["enabled"]:
+        return False
+
+    target_phone = normalize_whatsapp_phone(target_user.get("phone"))
+    if not target_phone:
+        logger.warning("WA skip: phone kosong untuk user %s", target_user.get("id", "unknown"))
+        return False
+
+    if wa_cfg["provider"] == "webhook":
+        if not wa_cfg["configured"]:
+            logger.warning("WA skip: WHATSAPP_WEBHOOK_URL belum di-set")
+            return False
+
+        headers = {"Content-Type": "application/json"}
+        token = wa_cfg["webhook_token"]
+        if token:
+            auth_header = wa_cfg["auth_header"]
+            if auth_header.lower() == "authorization" and not token.lower().startswith("bearer "):
+                headers[auth_header] = f"Bearer {token}"
+            else:
+                headers[auth_header] = token
+
+        payload = {
+            "to": target_phone,
+            "message": message,
+            "type": notif_type,
+            "taskId": task_id,
+            "userId": target_user.get("id"),
+            "userName": target_user.get("name"),
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=wa_cfg["timeout_seconds"]) as client:
+                response = await client.post(wa_cfg["webhook_url"], json=payload, headers=headers)
+                response.raise_for_status()
+        except Exception as exc:
+            logger.warning("WA send gagal untuk %s: %s", target_phone, exc)
+            return False
+
+        logger.info("WA notification terkirim ke %s (%s)", target_phone, notif_type)
+        return True
+
+    if wa_cfg["provider"] == "waha":
+        if not wa_cfg["configured"]:
+            logger.warning("WAHA skip: WHATSAPP_WAHA_BASE_URL belum di-set")
+            return False
+
+        try:
+            info = await ensure_waha_session(wa_cfg)
+            state = (info or {}).get("status", "")
+            if state != "WORKING":
+                logger.warning("WAHA belum terhubung. Status session: %s", state or "unknown")
+                return False
+
+            chat_id = f"{target_phone}@c.us"
+            payload = {
+                "chatId": chat_id,
+                "text": message,
+                "session": wa_cfg["waha_session"],
+            }
+            response = await waha_request(wa_cfg, "POST", "/api/sendText", json_payload=payload)
+            response.raise_for_status()
+        except Exception as exc:
+            logger.warning("WAHA send gagal untuk %s: %s", target_phone, exc)
+            return False
+
+        logger.info("WA notification terkirim via WAHA ke %s (%s)", target_phone, notif_type)
+        return True
+
+    logger.warning("WA skip: provider %s belum didukung", wa_cfg["provider"])
+    return False
 
 
 async def ensure_bootstrap_admin() -> None:
@@ -129,6 +429,14 @@ async def create_notification(ntype: str, message: str, target_user: dict, task_
         targetEmail=target_email or None,
     )
     await db.notifications.insert_one(notif.dict())
+    asyncio.create_task(
+        send_whatsapp_message(
+            target_user=target_user,
+            message=f"[ProManage] {message}",
+            notif_type=ntype,
+            task_id=task_id,
+        )
+    )
 
 
 # ===== AUTH =====
@@ -758,13 +1066,129 @@ async def mark_notification_read(notif_id: str, current=Depends(get_current_user
 # ===== WHATSAPP STATUS =====
 @api_router.get("/whatsapp/status")
 async def whatsapp_status(current=Depends(get_current_user)):
-    wa_enabled = os.environ.get("WHATSAPP_ENABLED", "false").lower() == "true"
+    return await get_whatsapp_runtime_status()
+
+
+@api_router.post("/whatsapp/connect")
+async def whatsapp_connect(current=Depends(get_current_user)):
+    if not is_admin_or_manager(current):
+        raise HTTPException(status_code=403, detail="Hanya Admin/Manager yang dapat menghubungkan WhatsApp")
+
+    wa_cfg = get_whatsapp_config()
+    if not wa_cfg["enabled"]:
+        raise HTTPException(status_code=400, detail="WhatsApp belum diaktifkan (WHATSAPP_ENABLED=false)")
+    if wa_cfg["provider"] != "waha":
+        raise HTTPException(status_code=400, detail="Mode scan QR hanya tersedia untuk WHATSAPP_PROVIDER=waha")
+    if not wa_cfg["configured"]:
+        raise HTTPException(status_code=400, detail="WHATSAPP_WAHA_BASE_URL belum di-set")
+
+    try:
+        session_info = await ensure_waha_session(wa_cfg)
+    except Exception as exc:
+        logger.warning("WAHA connect gagal: %s", exc)
+        raise HTTPException(status_code=502, detail="Gagal menghubungkan ke WAHA")
+
+    status_data = map_waha_status(session_info)
     return {
-        "enabled": wa_enabled,
-        "provider": os.environ.get("WHATSAPP_PROVIDER", "webhook"),
-        "connected": wa_enabled,
-        "lastPing": datetime.utcnow().isoformat() + "Z" if wa_enabled else None,
-        "gatewayUrl": os.environ.get("WHATSAPP_WEBHOOK_URL", ""),
+        "message": "Session WhatsApp siap",
+        "session": wa_cfg["waha_session"],
+        **status_data,
+    }
+
+
+@api_router.get("/whatsapp/qr")
+async def whatsapp_qr(current=Depends(get_current_user)):
+    if not is_admin_or_manager(current):
+        raise HTTPException(status_code=403, detail="Hanya Admin/Manager yang dapat melihat QR WhatsApp")
+
+    wa_cfg = get_whatsapp_config()
+    if not wa_cfg["enabled"]:
+        raise HTTPException(status_code=400, detail="WhatsApp belum diaktifkan (WHATSAPP_ENABLED=false)")
+    if wa_cfg["provider"] != "waha":
+        raise HTTPException(status_code=400, detail="Endpoint QR hanya tersedia untuk WHATSAPP_PROVIDER=waha")
+    if not wa_cfg["configured"]:
+        raise HTTPException(status_code=400, detail="WHATSAPP_WAHA_BASE_URL belum di-set")
+
+    try:
+        session_info = await ensure_waha_session(wa_cfg)
+        status_data = map_waha_status(session_info)
+        if status_data["connected"]:
+            return {
+                "session": wa_cfg["waha_session"],
+                **status_data,
+                "qr": None,
+            }
+
+        qr_data = await get_waha_qr_data(wa_cfg)
+    except Exception as exc:
+        logger.warning("WAHA QR gagal: %s", exc)
+        raise HTTPException(status_code=502, detail="Gagal mengambil QR WhatsApp dari WAHA")
+
+    return {
+        "session": wa_cfg["waha_session"],
+        **status_data,
+        "qr": qr_data,
+    }
+
+
+@api_router.post("/whatsapp/logout")
+async def whatsapp_logout(current=Depends(get_current_user)):
+    if not is_admin_or_manager(current):
+        raise HTTPException(status_code=403, detail="Hanya Admin/Manager yang dapat memutuskan WhatsApp")
+
+    wa_cfg = get_whatsapp_config()
+    if wa_cfg["provider"] != "waha":
+        raise HTTPException(status_code=400, detail="Logout WA hanya tersedia untuk WHATSAPP_PROVIDER=waha")
+    if not wa_cfg["configured"]:
+        raise HTTPException(status_code=400, detail="WHATSAPP_WAHA_BASE_URL belum di-set")
+
+    try:
+        response = await waha_request(wa_cfg, "POST", f"/api/sessions/{wa_cfg['waha_session']}/logout")
+        if response.status_code not in (200, 201, 204):
+            response.raise_for_status()
+    except Exception as exc:
+        logger.warning("WAHA logout gagal: %s", exc)
+        raise HTTPException(status_code=502, detail="Gagal logout session WhatsApp")
+
+    return {
+        "message": "Session WhatsApp berhasil diputus",
+        "session": wa_cfg["waha_session"],
+    }
+
+
+@api_router.post("/whatsapp/test")
+async def whatsapp_test(data: WhatsAppTestInput, current=Depends(get_current_user)):
+    user = await db.users.find_one({"id": current["sub"], "deletedAt": None})
+    if not user:
+        raise HTTPException(status_code=404, detail="User tidak ditemukan")
+
+    own_phone = normalize_whatsapp_phone(user.get("phone"))
+    requested_phone = normalize_whatsapp_phone(data.phone)
+    if requested_phone and requested_phone != own_phone and current.get("role") not in ("Manager", "Admin"):
+        raise HTTPException(status_code=403, detail="Tidak memiliki izin kirim test ke nomor lain")
+
+    target_phone = requested_phone or own_phone
+    if not target_phone:
+        raise HTTPException(status_code=400, detail="Nomor WA tujuan tidak tersedia")
+
+    message = (data.message or "Tes notifikasi WhatsApp dari ProManage").strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="Pesan test tidak boleh kosong")
+
+    sent = await send_whatsapp_message(
+        target_user={"id": user["id"], "name": user.get("name"), "phone": target_phone},
+        message=message,
+        notif_type="manual_test",
+    )
+    if not sent:
+        raise HTTPException(
+            status_code=502,
+            detail="Gagal mengirim WhatsApp. Periksa konfigurasi provider (webhook/waha) dan status koneksi WA.",
+        )
+
+    return {
+        "message": "Pesan test WhatsApp terkirim",
+        "to": target_phone,
     }
 
 

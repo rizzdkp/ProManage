@@ -89,6 +89,10 @@ export const notificationsAPI = {
 // WhatsApp
 export const whatsappAPI = {
   getStatus: () => api.get('/whatsapp/status'),
+  connect: () => api.post('/whatsapp/connect'),
+  getQr: () => api.get('/whatsapp/qr'),
+  logout: () => api.post('/whatsapp/logout'),
+  sendTest: (data) => api.post('/whatsapp/test', data),
 };
 
 // Stats

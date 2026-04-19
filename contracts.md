@@ -40,7 +40,11 @@
 - `PATCH /api/notifications/{id}/read` → mark as read
 
 ## WhatsApp
-- `GET /api/whatsapp/status` → {enabled, provider, connected, lastPing}
+- `GET /api/whatsapp/status` → {enabled, provider, configured, connected, lastPing, session?, sessionState?, needsQrScan?}
+- `POST /api/whatsapp/connect` → inisialisasi/aktifkan session WA (provider waha)
+- `GET /api/whatsapp/qr` → ambil QR image untuk scan login WhatsApp
+- `POST /api/whatsapp/logout` → putuskan session WA yang sedang aktif
+- `POST /api/whatsapp/test` → {phone?, message?} → kirim pesan test ke gateway WA
 
 ## Mock Data to Replace
 - mockUsers → /api/users + /api/auth

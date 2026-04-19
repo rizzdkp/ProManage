@@ -43,13 +43,26 @@ const Dashboard = () => {
   const [stats, setStats] = useState({ totalProjects: 0, completedTasks: 0, inProgressTasks: 0, totalMembers: 0, totalTasks: 0, pendingTasks: 0 });
   const [projects, setProjects] = useState([]);
   const [allUsers, setAllUsers] = useState([]);
-  const [waStatus, setWaStatus] = useState({ enabled: false, provider: '', connected: false, lastPing: null });
+  const [waStatus, setWaStatus] = useState({ enabled: false, provider: '', connected: false, configured: false, lastPing: null, sessionState: null, needsQrScan: false });
+  const [showWaQr, setShowWaQr] = useState(false);
+  const [waQr, setWaQr] = useState(null);
+  const [waQrLoading, setWaQrLoading] = useState(false);
   const [loadingCreate, setLoadingCreate] = useState(false);
+
+  const loadWaStatus = async () => {
+    try {
+      const response = await whatsappAPI.getStatus();
+      setWaStatus(response.data || {});
+      return response.data || null;
+    } catch {
+      return null;
+    }
+  };
 
   const loadData = () => {
     statsAPI.get().then(r => setStats(r.data)).catch(() => {});
     projectsAPI.getAll().then(r => setProjects((r.data || []).filter(p => !p.deletedAt).slice(0, 4))).catch(() => {});
-    whatsappAPI.getStatus().then(r => setWaStatus(r.data)).catch(() => {});
+    loadWaStatus();
     usersAPI.getAll().then(r => setAllUsers(r.data || [])).catch(() => {});
   };
 
@@ -73,6 +86,52 @@ const Dashboard = () => {
 
   const getUserById = (id) => allUsers.find(u => u.id === id);
   const getInitials = (name) => name ? name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2) : '?';
+
+  const refreshWaQr = async () => {
+    setWaQrLoading(true);
+    setWaQr(null);
+    try {
+      await whatsappAPI.connect();
+      const status = await loadWaStatus();
+      if (status?.connected) {
+        toast.success('WhatsApp sudah terhubung');
+        return;
+      }
+      const qrResponse = await whatsappAPI.getQr();
+      setWaQr(qrResponse.data?.qr || null);
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Gagal mengambil QR WhatsApp');
+    } finally {
+      setWaQrLoading(false);
+    }
+  };
+
+  const openWaQrDialog = async () => {
+    setShowWaQr(true);
+    await refreshWaQr();
+  };
+
+  const verifyWaConnected = async () => {
+    const status = await loadWaStatus();
+    if (status?.connected) {
+      toast.success('WhatsApp berhasil terhubung');
+      setShowWaQr(false);
+      setWaQr(null);
+      return;
+    }
+    toast.error('Belum terhubung. Silakan scan QR lalu cek lagi.');
+  };
+
+  const disconnectWaSession = async () => {
+    try {
+      await whatsappAPI.logout();
+      toast.success('Session WhatsApp diputus');
+      setWaQr(null);
+      await loadWaStatus();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Gagal memutuskan session WhatsApp');
+    }
+  };
 
   const handleCreateProject = async () => {
     if (!projectForm.name || !projectForm.startDate || !projectForm.endDate) {
@@ -234,6 +293,10 @@ const Dashboard = () => {
                 <span className="text-[#111827] font-medium capitalize">{waStatus.provider || '-'}</span>
               </div>
               <div className="flex justify-between text-sm">
+                <span className="text-[#6B7280]">State Sesi</span>
+                <span className="text-[#111827] font-medium">{waStatus.sessionState || '-'}</span>
+              </div>
+              <div className="flex justify-between text-sm">
                 <span className="text-[#6B7280]">Status</span>
                 <span className={`font-medium ${waStatus.connected ? 'text-[#0F766E]' : 'text-[#E11D48]'}`}>
                   {waStatus.connected ? 'Aktif' : 'Tidak Aktif'}
@@ -243,6 +306,34 @@ const Dashboard = () => {
                 <span className="text-[#6B7280]">Terakhir Ping</span>
                 <span className="text-[#111827]">{waStatus.lastPing ? new Date(waStatus.lastPing).toLocaleString('id-ID') : '-'}</span>
               </div>
+              {canManage && waStatus.enabled && waStatus.provider === 'waha' && (
+                <div className="grid grid-cols-1 gap-2 pt-2">
+                  <Button
+                    variant="outline"
+                    className="rounded-xl h-9 text-xs"
+                    onClick={openWaQrDialog}
+                  >
+                    Scan QR WhatsApp
+                  </Button>
+                  <div className="grid grid-cols-2 gap-2">
+                    <Button
+                      variant="outline"
+                      className="rounded-xl h-9 text-xs"
+                      onClick={loadWaStatus}
+                    >
+                      Refresh Status
+                    </Button>
+                    <Button
+                      variant="outline"
+                      className="rounded-xl h-9 text-xs"
+                      onClick={disconnectWaSession}
+                      disabled={!waStatus.connected}
+                    >
+                      Putuskan Session
+                    </Button>
+                  </div>
+                </div>
+              )}
             </div>
           </motion.div>
 
@@ -269,6 +360,51 @@ const Dashboard = () => {
           </motion.div>
         </div>
       </div>
+
+      {/* WhatsApp QR Modal */}
+      <Dialog open={showWaQr} onOpenChange={(open) => {
+        setShowWaQr(open);
+        if (!open) {
+          setWaQr(null);
+          setWaQrLoading(false);
+        }
+      }}>
+        <DialogContent className="rounded-2xl max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-lg font-bold" style={{ color: '#111827' }}>Hubungkan WhatsApp via QR</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 py-2">
+            <p className="text-sm text-[#6B7280]">
+              Buka WhatsApp di HP Anda, pilih Perangkat Tertaut, lalu scan QR berikut.
+            </p>
+            <div className="rounded-xl border border-[#E5E7EB] bg-[#FAFAFA] p-3 flex items-center justify-center min-h-[280px]">
+              {waStatus.connected ? (
+                <div className="text-center">
+                  <p className="text-sm font-medium text-[#0F766E]">WhatsApp sudah terhubung.</p>
+                  <p className="text-xs text-[#6B7280] mt-1">Anda sudah bisa menerima notifikasi WA.</p>
+                </div>
+              ) : waQrLoading ? (
+                <p className="text-sm text-[#6B7280]">Memuat QR...</p>
+              ) : waQr?.imageDataUrl ? (
+                <img src={waQr.imageDataUrl} alt="QR WhatsApp" className="w-64 h-64 object-contain" />
+              ) : (
+                <p className="text-sm text-[#6B7280] text-center">QR belum tersedia. Klik Refresh QR untuk mengambil QR terbaru.</p>
+              )}
+            </div>
+            {waQr?.raw && !waQr?.imageDataUrl && (
+              <p className="text-xs break-all text-[#6B7280]">QR raw: {waQr.raw}</p>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={refreshWaQr} className="rounded-xl" disabled={waQrLoading}>
+              Refresh QR
+            </Button>
+            <Button onClick={verifyWaConnected} className="rounded-xl font-semibold" style={{ background: '#0A2540', color: 'white' }}>
+              Saya Sudah Scan
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Create Project Modal */}
       <Dialog open={showNewProject} onOpenChange={setShowNewProject}>

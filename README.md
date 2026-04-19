@@ -76,6 +76,25 @@ Copy-Item frontend/.env.production.example frontend/.env
 - CORS_ORIGINS
 - REACT_APP_BACKEND_URL
 
+Jika ingin notifikasi WhatsApp aktif, isi juga di backend/.env:
+
+- WHATSAPP_ENABLED=true
+- WHATSAPP_PROVIDER=waha (untuk login via scan QR) atau webhook
+
+Jika pilih WHATSAPP_PROVIDER=waha (direkomendasikan untuk scan QR mandiri):
+
+- WHATSAPP_WAHA_BASE_URL=http://127.0.0.1:3000
+- WHATSAPP_WAHA_API_KEY=<opsional>
+- WHATSAPP_WAHA_SESSION=default
+
+Jika pilih WHATSAPP_PROVIDER=webhook:
+
+- WHATSAPP_WEBHOOK_URL=<URL endpoint gateway WA>
+- WHATSAPP_WEBHOOK_TOKEN=<opsional>
+- WHATSAPP_WEBHOOK_AUTH_HEADER=Authorization
+
+- WHATSAPP_TIMEOUT_SECONDS=10
+
 4. Pastikan mode anti-dummy aktif:
 
 - ALLOW_PUBLIC_REGISTER=false

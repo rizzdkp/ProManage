@@ -58,6 +58,25 @@ Edit backend/.env:
 - BOOTSTRAP_ADMIN_PHONE
 - BOOTSTRAP_ADMIN_PASSWORD
 
+Jika ingin notifikasi WhatsApp terkirim otomatis:
+
+- WHATSAPP_ENABLED=true
+- WHATSAPP_PROVIDER=waha (scan QR) atau webhook
+
+Jika pilih mode scan QR (waha):
+
+- WHATSAPP_WAHA_BASE_URL=http://127.0.0.1:3000
+- WHATSAPP_WAHA_API_KEY=<opsional>
+- WHATSAPP_WAHA_SESSION=default
+
+Jika pilih mode webhook:
+
+- WHATSAPP_WEBHOOK_URL=<URL endpoint gateway WA>
+- WHATSAPP_WEBHOOK_TOKEN=<token optional>
+- WHATSAPP_WEBHOOK_AUTH_HEADER=Authorization
+
+- WHATSAPP_TIMEOUT_SECONDS=10
+
 Catatan:
 
 - Saat database kosong, backend otomatis membuat 1 akun Admin dari BOOTSTRAP_ADMIN_*.
@@ -122,6 +141,39 @@ Cek API internal:
 
 ```bash
 curl http://127.0.0.1:8000/api/
+```
+
+Untuk mode scan QR (WHATSAPP_PROVIDER=waha), jalankan WAHA lebih dulu:
+
+```bash
+sudo apt install -y docker.io
+sudo systemctl enable --now docker
+sudo docker run -d --restart unless-stopped --name waha -p 127.0.0.1:3000:3000/tcp devlikeapro/waha
+```
+
+Lalu restart backend:
+
+```bash
+sudo systemctl restart promanage-backend
+```
+
+Ambil QR dari API backend (pakai JWT Admin/Manager), lalu scan dengan WhatsApp HP:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/whatsapp/connect \
+	-H "Authorization: Bearer <JWT_TOKEN>"
+
+curl http://127.0.0.1:8000/api/whatsapp/qr \
+	-H "Authorization: Bearer <JWT_TOKEN>"
+```
+
+Tes koneksi WhatsApp (setelah login dan punya JWT):
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/whatsapp/test \
+	-H "Authorization: Bearer <JWT_TOKEN>" \
+	-H "Content-Type: application/json" \
+	-d '{"message":"Tes WA dari VPS ProManage"}'
 ```
 
 Cek dari browser publik:
